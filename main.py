@@ -11,10 +11,11 @@ import random
 import seaborn as sns
 sns.set_theme
 
-from multimodal.apollo import MultimodalRep
+from multimodal.representation import MultimodalRep
 from multimodal.utils import load_pretrained_models, load_data, get_id_list, plot_sample, pca_analysis, get_ref_sample
 
 tf.keras.callbacks.TerminateOnNaN()
+tf.config.list_physical_devices('GPU')
 
 def main():
     orig_stdout = sys.stdout
@@ -48,7 +49,7 @@ def main():
     sample_list = get_id_list(data_path, from_file=False, file_name="/home/sana/multimodal/data_list.pkl")
     sample_list = sample_list
     print("Total number of samples: ", len(sample_list))
-    train_loader, valid_loader, test_loader, list_ids = load_data(sample_list, data_path, train_ratio=0.6, test_ratio=0.2)
+    train_loader, valid_loader, test_loader, list_ids = load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05)
     n_train = int(len(sample_list)*0.6)
     ref_samples = get_ref_sample(data_path, list_ids[0][10])
 
@@ -58,7 +59,7 @@ def main():
                                  train_ids=list_ids[0], shared_size=z_s_size, modality_names=modality_names, 
                                  z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
                                  modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                                 mask=True, beta=0.0)  
+                                 mask=True, beta=2.0)  
     
     del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 

@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 import tensorflow as tf
 # import tensorflow_addons as tfa
-from multimodal.apollo import MultimodalDataset
+from multimodal.representation import MultimodalDataset
 import numpy as np
 import random
 
@@ -16,11 +16,13 @@ from ml4h.tensormap.ukb.ecg import ecg_rest_median_raw_10
 from ml4h.tensormap.ukb.mri import lax_4ch_heart_center
 
 from sklearn.decomposition import PCA
-from sklearn.linear_model import Ridge, LogisticRegression
+from sklearn.linear_model import Ridge, LogisticRegression, Lasso, LinearRegression
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.cluster import KMeans
 from scipy.optimize import linear_sum_assignment as linear_assignment
 from sklearn.metrics import confusion_matrix
+from sklearn.metrics import r2_score
+from sklearn import svm
 
 
 def load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path, shared_s, modality_specific_s):
@@ -35,35 +37,38 @@ def load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path,
     return ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 
 
-def load_data(sample_list, data_path, train_ratio=0.6, test_ratio=0.2):
+def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05):
     ecg_pheno = ['PQInterval', 'QTInterval','QTCInterval','QRSDuration','RRInterval']
     mri_pheno = ['LA_2Ch_vol_max', 'LA_2Ch_vol_min', 'LA_4Ch_vol_max', 'LA_4Ch_vol_min', 'LVEDV', 'LVEF',
                 'LVESV', 'LVM', 'LVSV', 'RVEDV', 'RVEF', 'RVESV', 'RVSV']
     phenotype_df = pd.read_csv("/home/sana/tensors_all_union.csv")[ecg_pheno+mri_pheno+['fpath']]
     phenotype_df.dropna(inplace=True)
     phenotype_df['fpath'] = phenotype_df['fpath'].astype(str) + '.hd5'
-    eval_ids = phenotype_df['fpath']
+    eval_ids = phenotype_df['fpath']  # Patient ids for which we have phenotype labels
 
     common_elements = list(set(sample_list) & set(eval_ids))
-    print("Total number of ids that we have phenotypes for: ", len(common_elements))
-    # remaining_elements = [item for item in sample_list if item not in eval_ids]
-    # reordered_sample_list = common_elements + remaining_elements
-    sample_list = common_elements
-    reordered_sample_list = common_elements
-    n_samples = len(sample_list)
-    n_train = int(train_ratio*n_samples)
+    # sample_list = common_elements
+    # print("Total number of ids that we have phenotypes for: ", len(common_elements))
+    remaining_elements = list(set(sample_list) - set(eval_ids))
+    reordered_sample_list = common_elements + remaining_elements
+    # reordered_sample_list = common_elements
+    n_samples = len(reordered_sample_list)
+    # n_train = int(train_ratio*n_samples)
+    n_train = 5000
     n_test = int(test_ratio*n_samples)
     
     train_list = reordered_sample_list[-n_train:]
-    valid_list = reordered_sample_list[n_test:-n_train]
-    test_list = reordered_sample_list[:n_test]
+    # valid_list = reordered_sample_list[n_test:-n_train]
+    # test_list = reordered_sample_list[:n_test]
+    valid_list = common_elements[:len(common_elements)//2]
+    test_list = common_elements[len(common_elements)//2:]
 
     trainset = MultimodalDataset(data_path, train_list)
     validset = MultimodalDataset(data_path, valid_list)
     testset = MultimodalDataset(data_path, test_list)
 
     train_loader = DataLoader(trainset, batch_size=16, shuffle=False, drop_last=False)
-    print("Trainloader length: ", len(trainset))
+    print("Trainloader length: ", len(trainset), len(validset), len(testset))
     valid_loader = DataLoader(validset, batch_size=32, shuffle=False, drop_last=False)
     test_loader = DataLoader(testset, batch_size=32, shuffle=False, drop_last=False)
     return train_loader, valid_loader, test_loader, (train_list, valid_list, test_list)
@@ -158,13 +163,20 @@ def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None)
     if mask is not None:
         z_test = np.take(z_test, np.argwhere(mask==1)[:,0], axis=1)
         z_train = np.take(z_train, np.argwhere(mask==1)[:,0], axis=1)
+    print('Dataset shape: ', z_test.shape, z_train.shape)
     for pheno in phenotypes:
-        predictor = KernelRidge()
+        # predictor = LinearRegression()
+        # predictor = KernelRidge()
+        predictor = svm.SVR()
         predictor.fit(z_train, y_train[pheno].to_numpy())
         z_pred_train = predictor.predict(z_train)
         z_pred = predictor.predict(z_test)
-        r2_test = (((z_pred - y_test[pheno].to_numpy())**2)/(y_test[pheno].to_numpy() - y_test[pheno].to_numpy().mean())**2).mean()
-        r2_train = (((z_pred_train - y_train[pheno].to_numpy())**2)/(y_train[pheno].to_numpy() - y_train[pheno].to_numpy().mean())**2).mean()
+        print('predicted:', z_pred[:5])
+        print('label:', y_test[pheno].to_numpy()[:5])
+        # r2_test = (((z_pred - y_test[pheno].to_numpy())**2).mean())/(((y_test[pheno].to_numpy() - y_test[pheno].to_numpy().mean())**2).mean())
+        # r2_train = (((z_pred_train - y_train[pheno].to_numpy())**2).mean())/(((y_train[pheno].to_numpy() - y_train[pheno].to_numpy().mean())**2).mean())
+        r2_test = r2_score(y_test[pheno].to_numpy(), z_pred)
+        r2_train = r2_score(y_train[pheno].to_numpy(), z_pred_train)
         # correlations = np.corrcoef(z_test.reshape(len(z_test), -1), y_test[pheno].to_numpy(), rowvar=False)[:len(z_test), -1]
         correlations = np.corrcoef(z_pred, y_test[pheno].to_numpy(), rowvar=False)
         print("Pearson correlation of %s: %.5f"%(pheno, correlations.mean()))
