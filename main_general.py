@@ -48,12 +48,12 @@ def main():
                                                                                 shared_s=z_s_size, modality_specific_s=z_m_size)
 
     # Load data
-    sample_list = get_id_list(data_path, from_file=False, file_name="/home/sana/multimodal/data_list.pkl")
-    sample_list = sample_list
+    sample_list = get_id_list(data_path, from_file=True, file_name="/home/sana/multimodal/data_list.pkl")
+    # sample_list = sample_list
     print("Total number of samples: ", len(sample_list))
     train_loader, valid_loader, test_loader, list_ids = load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05)
     n_train = int(len(sample_list)*0.6)
-    ref_samples = get_ref_sample(data_path, list_ids[0][10])
+    # ref_samples = get_ref_sample(data_path, list_ids[0][10])
 
     # Train the dissentangler 
     rep_disentangler = MultimodalRep(encoders={'input_ecg_rest_median_raw_10_continuous': ecg_encoder, 'input_lax_4ch_heart_center_continuous':mri_encoder}, 
@@ -64,7 +64,7 @@ def main():
     
     del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 
-    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=4, epochs_dec=4, lr_dec=0.001, lr_enc=0.001)
+    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=1, epochs_dec=1, lr_dec=0.001, lr_enc=0.001)
     _, axs = plt.subplots(2,2)
     axs[0, 0].plot(dec_loss)
     axs[0, 0].set_title("Decoder training loss")

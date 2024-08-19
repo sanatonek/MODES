@@ -13,7 +13,7 @@ import pandas as pd
 import seaborn as sns
 import numpy as np
 
-from multimodal.contrastive import MultimodalRep
+from multimodal.representation import MultimodalRep
 from multimodal.utils import load_data, get_id_list, plot_sample, pca_analysis, phenotype_predictor, load_pretrained_models, cluster_test
 
 def main():
@@ -227,6 +227,22 @@ def main():
                              test_pheno_df, n_pca=rep_disentangler.merged_size,
                              phenotypes=ecg_pheno+mri_pheno) 
 
+    # Generalizability test
+    gen_test_ours, gen_test_pca = [], []
+    ratios = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
+    for ratio in ratios:
+        chopped_df = valid_pheno_df[:int(ratio*len(valid_pheno_df))]
+        acc = phenotype_predictor(np.vstack(chopped_df['z_merged']), chopped_df, 
+                                np.vstack(test_pheno_df['z_merged']), test_pheno_df, 
+                                phenotypes=ecg_pheno+mri_pheno)
+        acc_pca = phenotype_predictor(np.concatenate([np.vstack(chopped_df['z_baseline_mri']),np.vstack(chopped_df['z_baseline_ecg'])],-1),
+                                    chopped_df, 
+                                    np.concatenate([np.vstack(test_pheno_df['z_baseline_mri']),np.vstack(test_pheno_df['z_baseline_ecg'])],-1), 
+                                    test_pheno_df, n_pca=rep_disentangler.merged_size,
+                                    phenotypes=ecg_pheno+mri_pheno) 
+        gen_test_ours.append(acc)
+        gen_test_pca.append(acc_pca)
+
     for phenotype in ecg_pheno+mri_pheno:
         labels = ['ecg_zs', 'ecg_zm', 'mri_zs', 'mri_zm', 'ecg rep.', 'mri rep.', 'merged rep.', 'concat. re.', 'concat. rep. pca']
         x = np.arange(len(labels))  # the label locations
@@ -253,28 +269,15 @@ def main():
         plt.savefig("/home/sana/multimodal/plots/%s.pdf"%phenotype)
         fig.clf()
 
-    # Generalizability test
-    train_ours, test_our, train_pca, test_pca = [], [], [], []
-    for ratio in [1, 0.8, 0.6, 0.4, 0.2]:
-        chopped_df = valid_pheno_df[:int(ratio*len(valid_pheno_df))]
-        train_acc, test_acc = phenotype_predictor(np.vstack(chopped_df['z_merged']), chopped_df, 
-                             np.vstack(test_pheno_df['z_merged']), test_pheno_df, 
-                             phenotypes=ecg_pheno+mri_pheno)
-        train_acc_pca, test_acc_pca = phenotype_predictor(np.concatenate([np.vstack(chopped_df['z_baseline_mri']),np.vstack(chopped_df['z_baseline_ecg'])],-1),
-                                                        chopped_df, 
-                                                        np.concatenate([np.vstack(test_pheno_df['z_baseline_mri']),np.vstack(test_pheno_df['z_baseline_ecg'])],-1), 
-                                                        test_pheno_df, n_pca=rep_disentangler.merged_size,
-                                                        phenotypes=ecg_pheno+mri_pheno) 
-        train_ours.append(train_acc)
-        test_our.append(test_acc)
-        train_pca.append(train_acc_pca)
-        test_pca.append(test_acc_pca)
-    
-    plt.plot(train_ours, 'r')
-    plt.plot(test_our, 'b')
-    plt.plot(train_pca, 'g')
-    plt.plot(test_pca, 'black')
-    plt.savefig("/home/sana/multimodal/plots/generalizability.pdf")
+        
+        fig = plt.figure()
+        plt.plot(ratios, [g[phenotype][0] for g in gen_test_ours], 'r', label='Train merged')
+        plt.plot(ratios, [g[phenotype][1] for g in gen_test_ours], 'b', label='Test merged')
+        plt.plot(ratios, [g[phenotype][0] for g in gen_test_pca], 'g', label='Train pca')
+        plt.plot(ratios, [g[phenotype][1] for g in gen_test_pca], 'black', label='Test pca')
+        plt.legend()
+        plt.savefig("/home/sana/multimodal/plots/generalizability_%s.pdf"%phenotype)
+        fig.clf()
 
     sys.stdout = orig_stdout
     f.close()
