@@ -56,7 +56,7 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
         # reordered_sample_list = common_elements
         n_samples = len(reordered_sample_list)
         # n_train = int(train_ratio*n_samples)
-        n_train = 1000
+        n_train = 500
         n_test = int(test_ratio*n_samples)
         
         train_list = reordered_sample_list[-n_train:]
@@ -174,6 +174,8 @@ def pca_analysis(data, model, modality_name, percentile=0.25):
 def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None, n_pca=None):
     phenotypes_scores = {}
     # TODO check for classification setting
+    if tf.reduce_sum(mask)==len(mask):
+        return [0,0]
     if mask is not None:
         z_test = np.take(z_test, np.argwhere(mask==1)[:,0], axis=1)
         z_train = np.take(z_train, np.argwhere(mask==1)[:,0], axis=1)
