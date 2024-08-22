@@ -56,7 +56,7 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
         # reordered_sample_list = common_elements
         n_samples = len(reordered_sample_list)
         # n_train = int(train_ratio*n_samples)
-        n_train = 5000
+        n_train = 500
         n_test = int(test_ratio*n_samples)
         
         train_list = reordered_sample_list[-n_train:]
@@ -241,3 +241,30 @@ def hungarian_match(y, y_hat, n_clusters):
         mapped_scores[y_hat == pred_z] = gt_z
     return (mapped_scores==y).mean() 
 
+# def missing_modality_test(z_train, y_train, z_test, y_test, phenotypes, mask=None, n_pca=None)
+#     phenotypes_scores = {}
+#     # TODO check for classification setting
+#     if mask is not None:
+#         if tf.reduce_sum(mask)==0:
+#             for pheno in phenotypes:
+#                 phenotypes_scores[pheno] = (0,0)
+#             return phenotypes_scores
+#         z_test = np.take(z_test, np.argwhere(mask==1)[:,0], axis=1)
+#         z_train = np.take(z_train, np.argwhere(mask==1)[:,0], axis=1)
+#     if n_pca is not None:
+#         pca = PCA(n_components=n_pca)
+#         z_train = pca.fit_transform(z_train)
+#         z_test = pca.transform(z_test)
+#     print('Dataset shape: ', z_test.shape, z_train.shape)
+#     for pheno in phenotypes:
+#         predictor = svm.SVR()
+#         predictor.fit(z_train, y_train[pheno].to_numpy())
+#         z_pred_train = predictor.predict(z_train)
+#         z_pred = predictor.predict(z_test)
+#         r2_test = r2_score(y_test[pheno].to_numpy(), z_pred)
+#         r2_train = r2_score(y_train[pheno].to_numpy(), z_pred_train)
+#         # correlations = np.corrcoef(z_test.reshape(len(z_test), -1), y_test[pheno].to_numpy(), rowvar=False)[:len(z_test), -1]
+#         correlations = np.corrcoef(z_pred, y_test[pheno].to_numpy(), rowvar=False)
+#         print("Pearson correlation of %s: %.5f"%(pheno, correlations.mean()))
+#         phenotypes_scores[pheno] = (r2_train, r2_test)
+#     return phenotypes_scores
