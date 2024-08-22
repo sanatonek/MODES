@@ -95,7 +95,7 @@ class MultimodalRep():
         dec_loss, enc_loss, shared_loss, m_loss = [], [], [], []
         shared_mask = []
         modality_specific_masks = {mod: [] for mod in self.modality_names}
-        n_rounds = 15
+        n_rounds = 20
         initial_temperature = 1
         anneal_rate = -np.log(0.2 / initial_temperature) / (n_rounds-1)
         optimizer_1 = tf.keras.optimizers.Adam(learning_rate=lr_enc, clipvalue=1)
@@ -103,7 +103,7 @@ class MultimodalRep():
         optimizer_3 = tf.keras.optimizers.Adam(learning_rate=lr_enc, clipvalue=1)
         optimizer_4 = tf.keras.optimizers.Adam(learning_rate=lr_enc, clipvalue=1)
         for iter_round in range(n_rounds):
-            dec_loss.extend(self.train_mask(trainloader, lr_dec, epochs_dec, optimizer_1))
+            # dec_loss.extend(self.train_mask(trainloader, lr_dec, epochs_dec, optimizer_1))
             m_loss.extend(self.optimize_modality_latent(trainloader, lr_dec, epochs_dec, optimizer_2))
             shared_loss.extend(self.optimize_shared_latent(trainloader, lr_dec, epochs_dec, optimizer_3))
             enc_loss.extend(self.train_encoder(trainloader, lr_enc, epochs_enc, optimizer_4))
@@ -129,6 +129,17 @@ class MultimodalRep():
                 ax.set_xlabel(self.modality_names[nn])
         plt.savefig("/home/sana/multimodal/plots/masks.pdf")
         return dec_loss, enc_loss, shared_loss, m_loss
+
+    def infoNCE(self, z_orig, reconst):
+        dot_product = tf.matmul(reconst, z_orig, transpose_b=True)
+        reconst_norm = tf.norm(reconst, axis=1, keepdims=True)
+        z_orig_norm = tf.norm(z_orig, axis=1, keepdims=True)
+        cosine_similarity_matrix = dot_product / (reconst_norm * tf.transpose(z_orig_norm) + 1e-10)
+        positive_similarities = tf.linalg.diag_part(cosine_similarity_matrix)
+        sum_of_similarities = tf.reduce_sum(cosine_similarity_matrix, axis=1)
+
+        infonce_loss = -tf.math.log(positive_similarities / sum_of_similarities + 1e-10)
+        return tf.reduce_mean(infonce_loss)
 
     def train_mask(self, trainloader, lr, n_epochs, optimizer):
         print(">>>>> Training the decoder ...")
@@ -156,7 +167,7 @@ class MultimodalRep():
                         # loss += self.beta*(self.modality_masks[mod].l1())
                         # loss += 10*(self.modality_masks[mod].entropy_regularization())
                         
-                        # reconst = self.decoders[mod](tf.concat([z_m, z_s_other], -1)+noise)
+                        reconst = self.decoders[mod](tf.concat([z_m, z_s_other], -1)+noise)
                         # cosine_similarity_matrix = tf.matmul(tf.nn.l2_normalize(reconst, axis=1), 
                         #                                      tf.nn.l2_normalize(z_orig, axis=1), transpose_b=True)
                         # positive_similarities = tf.linalg.diag_part(cosine_similarity_matrix)
@@ -194,11 +205,14 @@ class MultimodalRep():
         # loss_fn = tf.keras.losses.MeanSquaredError()
         # optimizer = tf.keras.optimizers.Adam(learning_rate=lr, clipvalue=1)
         loss_trend = []  
-        self._set_trainable_mask(trainable=True)
+        # self._set_trainable_mask(trainable=True)
+        for modality_name, z_size in self.z_sizes.items():
+            self.modality_masks[modality_name].trainable = False
+        self.shared_mask.trainable = True
         for epoch in range(n_epochs):
             batch_ind = 0
             for data,_ in trainloader:
-                loss = (self.beta*(self.shared_mask.l1())+100*(self.shared_mask.entropy_regularization())) if self.mask else 0
+                loss = (self.beta*(self.shared_mask.l1())+10*(self.shared_mask.entropy_regularization())) if self.mask else 0
                 trainable_var = [self.shared_mask.mask] if self.mask else []
                 with tf.GradientTape() as tape:
                     for m_ind, (mod, z) in enumerate(self.posterior_means.items()):
@@ -219,17 +233,20 @@ class MultimodalRep():
                         # loss += 10*(self.modality_masks[mod].entropy_regularization())
 
                         reconst = self.decoders[mod](tf.concat([z_m, z_s_other], -1)+noise)
-                        loss += tf.reduce_mean((z_orig-reconst)**2)
+                        loss += self.infoNCE(z_orig, reconst)#tf.reduce_mean((z_orig-reconst)**2)
                         loss += 0.01*tf.reduce_mean(self.posterior_means[mod][batch_ind:batch_ind+batch_size]**2)
                         trainable_var.extend([self.posterior_means[mod]])
+                        trainable_var.extend(self.decoders[mod].trainable_variables)
                 gradients = tape.gradient(loss, trainable_var)
                 optimizer.apply_gradients(zip(gradients, trainable_var))
                 batch_ind += batch_size         
                 del tape   
             # print(f"Epoch {epoch+1}/{n_epochs}, Loss: {loss.numpy()}")
-            loss_trend.append(loss.numpy())      
+            loss_trend.append(loss.numpy())   
+            np.save("/home/sana/multimodal/ckpts/shared_z", self.shared_post_mean.numpy())   
             for mod, zm in self.posterior_means.items():
-                np.save("/home/sana/multimodal/ckpts/modality_z_%s"%mod, zm.numpy())
+                decoder.save_weights("/home/sana/multimodal/ckpts/%s_decoder.weights.h5"%(mod))
+                # np.save("/home/sana/multimodal/ckpts/modality_z_%s"%mod, zm.numpy())
         return loss_trend
     
     def optimize_shared_latent(self, trainloader, lr, n_epochs, optimizer):
@@ -237,7 +254,9 @@ class MultimodalRep():
         # loss_fn = tf.keras.losses.MeanSquaredError()
         # optimizer = tf.keras.optimizers.Adam(learning_rate=lr, clipvalue=1)
         loss_trend = []
-        self._set_trainable_mask(trainable=True)
+        for modality_name, z_size in self.z_sizes.items():
+            self.modality_masks[modality_name].trainable = True
+        self.shared_mask.trainable = False
         for epoch in range(n_epochs):
             batch_ind = 0
             for data,_ in trainloader:
@@ -256,19 +275,21 @@ class MultimodalRep():
                             z_m = z[batch_ind:batch_ind+batch_size]
                             z_s = self.shared_post_mean[batch_ind:batch_ind+batch_size]
                         reconst = self.decoders[mod](tf.concat([z_m, z_s], -1)+noise)
-                        loss += tf.reduce_mean((z_orig-reconst)**2)
+                        loss += self.infoNCE(z_orig, reconst)#tf.reduce_mean((z_orig-reconst)**2)
                         trainable_var.extend([self.modality_masks[mod].mask])
+                        trainable_var.extend(self.decoders[mod].trainable_variables)
                         loss += self.beta*(self.modality_masks[mod].l1())
-                        loss += 100*(self.modality_masks[mod].entropy_regularization())
+                        loss += 10*(self.modality_masks[mod].entropy_regularization())
                     loss += 0.01*tf.reduce_mean(self.shared_post_mean[batch_ind:batch_ind+batch_size]**2)
                 gradients = tape.gradient(loss, trainable_var)
                 optimizer.apply_gradients(zip(gradients, trainable_var))
                 batch_ind += batch_size  
                 del tape          
             # print(f"Epoch {epoch+1}/{n_epochs}, Loss: {loss.numpy()}")
-            values = self.shared_post_mean.numpy()
-            np.save("/home/sana/multimodal/ckpts/shared_z", values)
             loss_trend.append(loss.numpy())
+            for mod, zm in self.posterior_means.items():
+                decoder.save_weights("/home/sana/multimodal/ckpts/%s_decoder.weights.h5"%(mod))
+                np.save("/home/sana/multimodal/ckpts/modality_z_%s"%mod, zm.numpy())
         print('Shared rep. Loss: ', np.mean(loss_trend))
         return loss_trend
     
@@ -413,7 +434,7 @@ class LearnableMask(keras.layers.Layer):
     def l1(self):
         # mask = self.gumbel_softmax(self.mask)
         mask = tf.sigmoid(self.mask)
-        return tf.reduce_mean(mask)
+        return tf.reduce_sum(mask)
 
     def entropy_regularization(self):
         # Clip values to avoid log(0)
@@ -421,7 +442,7 @@ class LearnableMask(keras.layers.Layer):
         # Compute entropy for each mask value
         entropy = -mask * tf.math.log(mask) - (1 - mask) * tf.math.log(1 - mask)
         # Sum entropy across all mask values
-        entropy_loss = tf.reduce_mean(entropy)
+        entropy_loss = tf.reduce_sum(entropy)
         # Apply the regularization term
         return entropy_loss
     

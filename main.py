@@ -59,7 +59,7 @@ def main():
                                  train_ids=list_ids[0], shared_size=z_s_size, modality_names=modality_names, 
                                  z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
                                  modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                                 mask=True, beta=1.0)  
+                                 mask=True, beta=0.1)  
     
     del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 

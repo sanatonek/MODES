@@ -12,6 +12,7 @@ sns.set_theme
 import pandas as pd
 import seaborn as sns
 import numpy as np
+from sklearn.manifold import TSNE
 
 from multimodal.representation import MultimodalRep
 from multimodal.utils import load_data, get_id_list, plot_sample, pca_analysis, phenotype_predictor, load_pretrained_models, cluster_test
@@ -276,8 +277,41 @@ def main():
         plt.plot(ratios, [g[phenotype][0] for g in gen_test_pca], 'g', label='Train pca')
         plt.plot(ratios, [g[phenotype][1] for g in gen_test_pca], 'black', label='Test pca')
         plt.legend()
+        plt.ylim([0,1])
         plt.savefig("/home/sana/multimodal/plots/generalizability_%s.pdf"%phenotype)
         fig.clf()
+
+        fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(10, 10))
+        zm_mri = np.vstack(test_pheno_df['zm_mri'])
+        mask_mri = rep_disentangler.modality_masks['input_lax_4ch_heart_center_continuous'].binary_mask
+        zm_mri = np.take(zm_mri, np.argwhere(mask_mri==1)[:,0], axis=1)
+        zm_mri = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=3).fit_transform(zm_mri)
+        axs[0,0].scatter(zm_mri[:,0], zm_mri[:,1], c=test_pheno_df[phenotype].to_list(),
+                         cmap=sns.cubehelix_palette(as_cmap=True))
+        axs[0,0].set_title("Modality-specific (MRI)")
+        zs_mri = np.vstack(test_pheno_df['zs_mri'])
+        mask_shared = rep_disentangler.shared_mask.binary_mask
+        zs_mri = np.take(zs_mri, np.argwhere(mask_shared==1)[:,0], axis=1)
+        zs_mri = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=3).fit_transform(zs_mri)
+        axs[0,1].scatter(zs_mri[:,0], zs_mri[:,1], c=test_pheno_df[phenotype].to_list(),
+                         cmap=sns.cubehelix_palette(as_cmap=True))
+        axs[0,1].set_title("Shared (MRI)")
+        zm_ecg = np.vstack(test_pheno_df['zm_ecg'])
+        mask_ecg = rep_disentangler.modality_masks['input_ecg_rest_median_raw_10_continuous'].binary_mask
+        zm_ecg = np.take(zm_ecg, np.argwhere(mask_ecg==1)[:,0], axis=1)
+        zm_ecg = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=3).fit_transform(zm_ecg)
+        axs[1,0].scatter(zm_ecg[:,0], zm_ecg[:,1], c=test_pheno_df[phenotype].to_list(),
+                         cmap=sns.cubehelix_palette(as_cmap=True))
+        axs[1,0].set_title("Modality-specific (ECG)")
+        zs_ecg = np.vstack(test_pheno_df['zs_ecg'])
+        zs_ecg = np.take(zs_ecg, np.argwhere(mask_shared==1)[:,0], axis=1)
+        zs_ecg = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=3).fit_transform(zs_ecg)
+        axs[1,1].scatter(zs_ecg[:,0], zs_ecg[:,1], c=test_pheno_df[phenotype].to_list(),
+                         cmap=sns.cubehelix_palette(as_cmap=True))
+        axs[1,1].set_title("Shared (ECG)")
+        plt.savefig("/home/sana/multimodal/plots/scatter_%s.pdf"%phenotype)
+        fig.clf()
+
 
     sys.stdout = orig_stdout
     f.close()
