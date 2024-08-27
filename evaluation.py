@@ -36,7 +36,7 @@ def main():
     modality_names = ['input_ecg_rest_median_raw_10_continuous', 'input_lax_4ch_heart_center_continuous']
 
     z_s_size = 256
-    z_m_size = 64
+    z_m_size = 128
     
     # Load pretrain models
     ecg_decoder, ecg_encoder, mri_encoder, mri_decoder = load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path,
@@ -204,6 +204,19 @@ def main():
                              np.vstack(test_pheno_df['zm_mri']), test_pheno_df, 
                              phenotypes=ecg_pheno+mri_pheno, 
                              mask=rep_disentangler.modality_masks['input_lax_4ch_heart_center_continuous'].binary_mask)
+    print("\nEvaluating full ECG")
+    f1 = phenotype_predictor(np.concatenate([np.vstack(valid_pheno_df['zm_ecg']),np.vstack(valid_pheno_df['zs_ecg'])],-1),
+                             valid_pheno_df,
+                             np.concatenate([np.vstack(test_pheno_df['zm_ecg']),np.vstack(test_pheno_df['zs_ecg'])],-1), 
+                             test_pheno_df, 
+                             phenotypes=ecg_pheno+mri_pheno, 
+                             mask=np.concatenate([rep_disentangler.modality_masks['input_ecg_rest_median_raw_10_continuous'].binary_mask, rep_disentangler.shared_mask.binary_mask], 0)) 
+    print("\nEvaluating full MRI")
+    f2 = phenotype_predictor(np.concatenate([np.vstack(valid_pheno_df['zm_mri']),np.vstack(valid_pheno_df['zs_mri'])],-1),
+                             valid_pheno_df,
+                             np.concatenate([np.vstack(test_pheno_df['zm_mri']),np.vstack(test_pheno_df['zs_mri'])],-1), 
+                             test_pheno_df,phenotypes=ecg_pheno+mri_pheno, 
+                             mask=np.concatenate([rep_disentangler.modality_masks['input_lax_4ch_heart_center_continuous'].binary_mask, rep_disentangler.shared_mask.binary_mask], 0))
     print("\nEvaluating baseline ECG")
     b1 = phenotype_predictor(np.vstack(valid_pheno_df['z_baseline_ecg']), valid_pheno_df, 
                              np.vstack(test_pheno_df['z_baseline_ecg']), test_pheno_df, 
@@ -251,18 +264,15 @@ def main():
         x = np.arange(len(labels))  # the label locations
         width = 0.4  # the width of the bars
         multiplier = 0
-
         fig, ax = plt.subplots(layout='constrained', figsize=(14, 4))
         scores = {'train':(s1[phenotype][0],s3[phenotype][0],s2[phenotype][0],s4[phenotype][0],b1[phenotype][0],b1[phenotype][1],m1[phenotype][0],m2[phenotype][0], m2_pca[phenotype][0]),
          'test':(s1[phenotype][1],s3[phenotype][1],s2[phenotype][1],s4[phenotype][1],b1[phenotype][1],b2[phenotype][1],m1[phenotype][1],m2[phenotype][1], m2_pca[phenotype][1])}
-
         for attribute, measurement in scores.items():
             offset = width * multiplier
             rounded_list = [round(m*100)/100 for m in measurement]
             rects = ax.bar(x + offset, rounded_list, width, label=attribute)
             ax.bar_label(rects, padding=3)
             multiplier += 1
-
         # Add some text for labels, title and custom x-axis tick labels, etc.
         ax.set_ylabel('R^2')
         ax.set_title(phenotype)
@@ -270,6 +280,31 @@ def main():
         # ax.xticks(rotation=70)
         ax.legend(loc='upper left', ncols=4)
         plt.savefig("/home/sana/multimodal/plots/%s.pdf"%phenotype)
+        fig.clf()
+
+
+        # Missing modality experiment
+        labels = ['ecg rep. (ours)', 'ecg rep.', 'mri rep. (ours)', 'mri rep.']
+        x = np.arange(len(labels))  # the label locations
+        width = 0.3  # the width of the bars
+        multiplier = 0
+        fig, ax = plt.subplots(layout='constrained', figsize=(8, 4))
+        scores = {'train':(f1[phenotype][0],b1[phenotype][0],f2[phenotype][0],b2[phenotype][0]),
+         'test':(f1[phenotype][1],b1[phenotype][1],f2[phenotype][1],b2[phenotype][1])}
+        for attribute, measurement in scores.items():
+            offset = width * multiplier
+            rounded_list = [round(m*100)/100 for m in measurement]
+            rects = ax.bar(x + offset, rounded_list, width, label=attribute)
+            ax.bar_label(rects, padding=3)
+            multiplier += 1
+        # Add some text for labels, title and custom x-axis tick labels, etc.
+        ax.set_ylabel('R^2')
+        ax.set_title(phenotype)
+        ax.set_xticks(x + width, labels, rotation=70)
+        # ax.xticks(rotation=70)
+        ax.legend(loc='upper left', ncols=4)
+        ax.set_title(phenotype)
+        plt.savefig("/home/sana/multimodal/plots/missingness_%s.pdf"%phenotype)
         fig.clf()
 
         

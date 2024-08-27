@@ -41,7 +41,7 @@ def main():
         os.mkdir("/home/sana/multimodal/plots")
 
     z_s_size = 256
-    z_m_size = 64
+    z_m_size = 128
     
     # Load pretrain models
     ecg_decoder, ecg_encoder, mri_encoder, mri_decoder = load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path,
@@ -60,11 +60,11 @@ def main():
                                  n_train=len(list_ids[0]), shared_size=z_s_size, modality_names=modality_names, 
                                  z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
                                  modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                                 mask=True, beta=0.1)  
+                                 mask=True, beta=0.01)  
     
     del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 
-    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=1, epochs_dec=1, lr_dec=0.001, lr_enc=0.001)
+    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=1, epochs_dec=1, lr_dec=0.001, lr_enc=0.0001)
     _, axs = plt.subplots(2,2)
     axs[0, 0].plot(dec_loss)
     axs[0, 0].set_title("Decoder training loss")

@@ -59,17 +59,17 @@ class MultimodalRep():
         self.shared_mask.trainable = trainable
 
     def _add_disentangled_block(self,encoder, input_size, z_s_size, z_m_size, trainable=False):
-        for layer in encoder.layers:
-            layer.trainable = False
+        # for layer in encoder.layers:
+        #     layer.trainable = False
         inputs = keras.Input(shape=input_size, dtype=tf.float32)
         x = encoder(inputs, training=False)
-        fc1 = keras.layers.Dense(z_m_size+z_s_size, name='l1', activation='relu')(x[0])
-        output1 = keras.layers.Dense(z_m_size, name='modality')(fc1)
-        output2 = keras.layers.Dense(z_s_size, name='shared')(fc1)
+        # fc1 = keras.layers.Dense(z_m_size+z_s_size, name='l1', activation='relu')(x[0])
+        output1 = keras.layers.Dense(z_m_size, name='modality')(x[0])
+        output2 = keras.layers.Dense(z_s_size, name='shared')(x[0])
         encoder = keras.models.Model(inputs=inputs, outputs=[output1, output2, x[0]])
         reps = keras.layers.Input(shape=(z_m_size+z_s_size,), dtype=tf.float32) 
-        fc1 = keras.layers.Dense(512, name='l1', activation='relu')(reps)
-        reconst = keras.layers.Dense(256, name='fusion')(fc1)
+        # fc1 = keras.layers.Dense(512, name='l1', activation='relu')(reps)
+        reconst = keras.layers.Dense(256, name='fusion')(reps)
         decoder = tf.keras.models.Model(inputs=(reps), outputs=reconst)
         return encoder, decoder
 
@@ -98,7 +98,7 @@ class MultimodalRep():
         n_rounds = 20
         initial_temperature = 1
         anneal_rate = -np.log(0.2 / initial_temperature) / (n_rounds-1)
-        optimizer_1 = tf.keras.optimizers.Adam(learning_rate=lr_dec, clipvalue=1)
+        # optimizer_1 = tf.keras.optimizers.Adam(learning_rate=lr_dec, clipvalue=1)
         optimizer_2 = tf.keras.optimizers.Adam(learning_rate=lr_dec, clipvalue=1)
         optimizer_3 = tf.keras.optimizers.Adam(learning_rate=lr_dec, clipvalue=1)
         optimizer_4 = tf.keras.optimizers.Adam(learning_rate=lr_enc, clipvalue=1)
@@ -221,8 +221,7 @@ class MultimodalRep():
                         _,z_s_other, z_other = self.encoders[prev_modality](tf.convert_to_tensor(data[prev_modality]))
                         _, _, z_orig = self.encoders[mod](x_m)
                         if self.mask:
-                            # z_s_other = self.shared_mask(z_s_other)
-                            z_s_other = self.shared_mask(z_other)
+                            z_s_other = self.shared_mask(z_s_other)
                             z_m = self.modality_masks[mod](z[batch_ind:batch_ind+batch_size])
                         else:
                             z_m = z[batch_ind:batch_ind+batch_size]
@@ -290,7 +289,7 @@ class MultimodalRep():
             np.save('/home/sana/multimodal/ckpts/mask_%s'%mod, self.modality_masks[mod].mask.numpy())
             np.save('/home/sana/multimodal/ckpts/mask_%s_bin'%mod, self.modality_masks[mod].binary_mask.numpy())
         np.save("/home/sana/multimodal/ckpts/shared_z", self.shared_post_mean.numpy())
-        print('Shared rep. Loss: ', np.mean(loss_trend))
+        # print('Shared rep. Loss: ', np.mean(loss_trend))
         return loss_trend
     
     def train_encoder(self, trainloader, lr, n_epochs, optimizer):

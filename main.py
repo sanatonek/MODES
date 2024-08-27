@@ -39,7 +39,7 @@ def main():
         os.mkdir("/home/sana/multimodal/plots")
 
     z_s_size = 256
-    z_m_size = 64
+    z_m_size = 128
     
     # Load pretrain models
     ecg_decoder, ecg_encoder, mri_encoder, mri_decoder = load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path,
@@ -49,7 +49,7 @@ def main():
     sample_list = get_id_list(data_path, from_file=True, file_name="/home/sana/multimodal/data_list.pkl")
     # sample_list = sample_list
     print("Total number of samples: ", len(sample_list))
-    train_loader, valid_loader, test_loader, list_ids = load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05)
+    train_loader, _, _, list_ids = load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05)
     n_train = int(len(sample_list)*0.6)
     ref_samples = get_ref_sample(data_path, list_ids[0][10])
 
@@ -59,11 +59,11 @@ def main():
                                  train_ids=list_ids[0], shared_size=z_s_size, modality_names=modality_names, 
                                  z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
                                  modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                                 mask=True, beta=0.5)  
+                                 mask=True, beta=0.01)  
     
     del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 
-    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=1, epochs_dec=1, lr_dec=0.001, lr_enc=0.001)
+    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=1, epochs_dec=1, lr_dec=0.001, lr_enc=0.0001)
     _, axs = plt.subplots(2,2)
     axs[0, 0].plot(dec_loss)
     axs[0, 0].set_title("Decoder training loss")
@@ -76,25 +76,25 @@ def main():
     plt.tight_layout()
     plt.savefig("/home/sana/multimodal/plots/train_curves.pdf")
 
-    rep_disentangler.load_from_checkpoint("/home/sana/multimodal/ckpts")
+    # rep_disentangler.load_from_checkpoint("/home/sana/multimodal/ckpts")
 
     # Plot reconstructed samples
-    test_batch, _ = next(iter(test_loader))
-    z_s_all, z_m_all = rep_disentangler.encode(test_batch)
-    reconstructed_samples = rep_disentangler.decode(z_s_all, z_m_all)#, test_batch)
-    z_s_mixed = {}
-    z_s_mixed[modality_names[0]] = z_s_all[modality_names[1]]
-    z_s_mixed[modality_names[1]] = z_s_all[modality_names[0]]
-    reconstructed_mixed_samples = rep_disentangler.decode(z_s_mixed, z_m_all)#, test_batch)
-    for m_name in modality_names:
-        plot_sample(test_batch[m_name], num_cols=4, num_rows=1,
-                    save_path="/home/sana/multimodal/plots/original_%s.pdf"%m_name)
-        plot_sample(reconstructed_samples[m_name], num_cols=4, num_rows=1,
-                    save_path="/home/sana/multimodal/plots/reconstructed_%s.pdf"%m_name)
-        plot_sample(reconstructed_mixed_samples[m_name], num_cols=4, num_rows=1,
-                    save_path="/home/sana/multimodal/plots/reconstructed_mixed_%s.pdf"%m_name)
-    sys.stdout = orig_stdout
-    out_file.close()
+    # test_batch, _ = next(iter(test_loader))
+    # z_s_all, z_m_all = rep_disentangler.encode(test_batch)
+    # reconstructed_samples = rep_disentangler.decode(z_s_all, z_m_all)#, test_batch)
+    # z_s_mixed = {}
+    # z_s_mixed[modality_names[0]] = z_s_all[modality_names[1]]
+    # z_s_mixed[modality_names[1]] = z_s_all[modality_names[0]]
+    # reconstructed_mixed_samples = rep_disentangler.decode(z_s_mixed, z_m_all)#, test_batch)
+    # for m_name in modality_names:
+    #     plot_sample(test_batch[m_name], num_cols=4, num_rows=1,
+    #                 save_path="/home/sana/multimodal/plots/original_%s.pdf"%m_name)
+    #     plot_sample(reconstructed_samples[m_name], num_cols=4, num_rows=1,
+    #                 save_path="/home/sana/multimodal/plots/reconstructed_%s.pdf"%m_name)
+    #     plot_sample(reconstructed_mixed_samples[m_name], num_cols=4, num_rows=1,
+    #                 save_path="/home/sana/multimodal/plots/reconstructed_mixed_%s.pdf"%m_name)
+    # sys.stdout = orig_stdout
+    # out_file.close()
 
 
 if __name__=="__main__":
