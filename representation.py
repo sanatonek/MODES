@@ -110,7 +110,7 @@ class MultimodalRep():
         dec_loss, enc_loss, shared_loss, m_loss = [], [], [], []
         shared_mask = []
         modality_specific_masks = {mod: [] for mod in self.modality_names}
-        n_rounds = 40
+        n_rounds = 50
         initial_temperature = 1
         anneal_rate = -np.log(0.2 / initial_temperature) / (n_rounds-1)
         # optimizer_1 = tf.keras.optimizers.Adam(learning_rate=lr_enc, clipvalue=1)
@@ -204,7 +204,7 @@ class MultimodalRep():
         for epoch in range(n_epochs):
             batch_ind = 0
             for data,_ in trainloader:
-                loss = (self.beta*(self.shared_mask.l1())+20*(self.shared_mask.entropy_regularization()))
+                loss = (self.beta*(self.shared_mask.l1())+30*(self.shared_mask.entropy_regularization()))
                 trainable_var = [self.shared_mask.mask]
                 with tf.GradientTape() as tape:
                     for m_ind, (mod, z) in enumerate(self.posterior_means.items()):
@@ -305,7 +305,7 @@ class MultimodalRep():
                         mod_mse = (z[batch_ind:batch_ind+batch_size]-z_m)**2
                         shared_loss = tf.reduce_mean(self.shared_mask(shared_mse))
                         modality_loss = tf.reduce_mean(self.modality_masks[mod](mod_mse))
-                        loss += 2*shared_loss + modality_loss
+                        loss += 5*shared_loss + modality_loss
                         trainable_var.extend(self.encoders[mod].trainable_variables)
                 gradients = tape.gradient(loss, trainable_var)
                 optimizer.apply_gradients(zip(gradients, trainable_var))
@@ -330,7 +330,8 @@ class MultimodalRep():
                 shared_mask = self.shared_mask.binary_mask
                 z_s = np.take(z_s, np.argwhere(shared_mask==1)[:,0], axis=1)
                 z_s_all.append(z_s)
-        z = tf.concat(z_m_all+[tf.reduce_mean(z_s_all, 0)], axis=-1)
+        z = tf.concat(z_m_all+[z_s_all[0]], axis=-1)
+        # z = tf.concat(z_m_all+[tf.reduce_mean(z_s_all, 0)], axis=-1)
         # z = tf.concat(z_m_all+[z_s_all[1]], axis=-1)
         self.merged_size = z.shape[-1]
         return z

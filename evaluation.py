@@ -244,7 +244,7 @@ def main():
                              phenotypes=ecg_pheno+mri_pheno) 
 
     # Generalizability test
-    gen_test_ours, gen_test_pca = [], []
+    gen_test_ours, gen_test_pca, gen_test_concat = [], [], []
     ratios = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
     for ratio in ratios:
         chopped_df = valid_pheno_df[:int(ratio*len(valid_pheno_df))]
@@ -256,8 +256,13 @@ def main():
                                     np.concatenate([np.vstack(test_pheno_df['z_baseline_mri']),np.vstack(test_pheno_df['z_baseline_ecg'])],-1), 
                                     test_pheno_df, n_pca=rep_disentangler.merged_size,
                                     phenotypes=ecg_pheno+mri_pheno) 
+        acc_concat = phenotype_predictor(np.concatenate([np.vstack(chopped_df['z_baseline_mri']),np.vstack(chopped_df['z_baseline_ecg'])],-1),
+                                    chopped_df, 
+                                    np.concatenate([np.vstack(test_pheno_df['z_baseline_mri']),np.vstack(test_pheno_df['z_baseline_ecg'])],-1), 
+                                    test_pheno_df, phenotypes=ecg_pheno+mri_pheno)
         gen_test_ours.append(acc)
         gen_test_pca.append(acc_pca)
+        gen_test_concat.append(acc_concat)
 
     for phenotype in ecg_pheno+mri_pheno:
         labels = ['ecg_zs', 'ecg_zm', 'mri_zs', 'mri_zm', 'ecg rep.', 'mri rep.', 'merged rep.', 'concat. re.', 'concat. rep. pca']
@@ -309,10 +314,12 @@ def main():
 
         
         fig = plt.figure(figsize=(10, 5))
-        plt.plot(ratios, [g[phenotype][0] for g in gen_test_ours], 'r', label='Train merged')
-        plt.plot(ratios, [g[phenotype][1] for g in gen_test_ours], 'b', label='Test merged')
-        plt.plot(ratios, [g[phenotype][0] for g in gen_test_pca], 'g', label='Train pca')
-        plt.plot(ratios, [g[phenotype][1] for g in gen_test_pca], 'black', label='Test pca')
+        plt.plot(ratios, [g[phenotype][0] for g in gen_test_ours], label='Train merged')
+        plt.plot(ratios, [g[phenotype][1] for g in gen_test_ours], label='Test merged')
+        plt.plot(ratios, [g[phenotype][0] for g in gen_test_pca], label='Train pca')
+        plt.plot(ratios, [g[phenotype][1] for g in gen_test_pca], label='Test pca')
+        plt.plot(ratios, [g[phenotype][0] for g in gen_test_concat], label='Train concat.')
+        plt.plot(ratios, [g[phenotype][1] for g in gen_test_concat], label='Test concat.')
         plt.legend()
         plt.ylim([0,1])
         plt.savefig("/home/sana/multimodal/plots/generalizability_%s.pdf"%phenotype)

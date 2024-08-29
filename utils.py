@@ -56,7 +56,7 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
         # reordered_sample_list = common_elements
         n_samples = len(reordered_sample_list)
         # n_train = int(train_ratio*n_samples)
-        n_train = 8000
+        n_train = 10000
         n_test = int(test_ratio*n_samples)
         
         train_list = reordered_sample_list[-n_train:]
