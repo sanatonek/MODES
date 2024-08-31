@@ -16,6 +16,8 @@ import h5py
 import tensorflow_probability as tfp
 from tensorflow_probability.python.distributions import logistic
 
+from representation import LearnableMask
+
 
 
 class MultimodalRep():
@@ -399,78 +401,3 @@ class MultimodalRep():
                 else:
                     x_recon[mod] = decoder(tf.concat([z_m_all, conditional_input], -1)+noise)
         return x_recon
-
-
-class AffectDataset(Dataset):
-    def __init__(self, path, file_names):
-        self.path = path
-        self.file_names = file_names
-
-    def __len__(self):
-        return len(self.file_names)
-
-    def __getitem__(self, idx):
-        img_path = os.path.join(self.path, self.file_names[idx])
-        sample_id = self.file_names[idx].split('.')[0]
-        with h5py.File(f'{img_path}', 'r') as hd5:
-            ecg = ecg_rest_median_raw_10.tensor_from_file(ecg_rest_median_raw_10, hd5)
-            mri = lax_4ch_heart_center.tensor_from_file(lax_4ch_heart_center, hd5)
-        return {"input_ecg_rest_median_raw_10_continuous":torch.Tensor(ecg), "input_lax_4ch_heart_center_continuous":torch.Tensor(mri)}, int(sample_id)
-
-class LearnableMask(keras.layers.Layer):
-    def __init__(self, input_dim, temperature=1.0, straight_through=True):
-        # TODO: Understand the Nan problem with temperature
-        super(LearnableMask, self).__init__()
-        self.mask = tf.Variable(initial_value=tf.zeros(input_dim), trainable=True)
-        self.temperature = temperature
-        self.straight_through = straight_through
-        self.trainable = True
-        self.binary_mask = tf.round(self.gumbel_softmax(self.mask))
-
-    def mask_size(self):
-        return tf.reduce_sum(self.binary_mask)
-
-    def l1(self):
-        # mask = self.gumbel_softmax(self.mask)
-        mask = tf.sigmoid(self.mask)
-        return tf.reduce_sum(mask)
-
-    def entropy_regularization(self):
-        # Clip values to avoid log(0)
-        mask = tf.sigmoid(self.mask)
-        # Compute entropy for each mask value
-        entropy = -mask * tf.math.log(mask) - (1 - mask) * tf.math.log(1 - mask)
-        # Sum entropy across all mask values
-        entropy_loss = tf.reduce_sum(entropy)
-        # Apply the regularization term
-        return entropy_loss
-    
-    def gumbel_softmax(self, logits, n_samples=0.2):
-        probs = tf.sigmoid(logits)
-        probs = tf.clip_by_value(probs, 1e-3, 1 - 1e-3) 
-        # dist = logistic.Logistic(logits/self.temperature, 1./self.temperature)
-        # samples = dist.sample()
-        # print('********', logits)
-        distribution = tfp.distributions.RelaxedBernoulli(self.temperature, probs=probs, allow_nan_stats=False)
-        # print(distribution.sample())
-        sample = distribution.sample()
-        return tf.clip_by_value(sample, 1e-12, 1.)
-    
-    def test(self):
-        return self.gumbel_softmax(self.mask)
-
-    def call(self, x):
-        # Gumbel-Softmax Sampling
-        # mask = tf.nn.gumbel_softmax(self.mask, tau=self.temperature, hard=self.straight_through)
-        if self.trainable is False:
-            return self.binary_mask * x
-        else:
-            mask = self.gumbel_softmax(self.mask)
-            self.binary_mask = tf.round(mask)
-            return x * mask  # Element-wise multiplication
-    
-    # def get_binary_mask(self):
-    #     bin_mask = tf.reduce_mean(self.gumbel_softmax(self.mask, n_samples=1), 0)
-    #     bin_mask = tf.round(bin_mask)
-    #     return bin_mask
-    
