@@ -17,13 +17,15 @@ from ml4h.tensormap.ukb.ecg import ecg_rest_median_raw_10
 from ml4h.tensormap.ukb.mri import lax_4ch_heart_center
 
 from sklearn.decomposition import PCA
-from sklearn.linear_model import Ridge, LogisticRegression, Lasso, LinearRegression
+from sklearn.linear_model import Ridge, LogisticRegression, Lasso, LinearRegression, RidgeClassifier
 from sklearn.kernel_ridge import KernelRidge
+from sklearn.metrics import roc_auc_score
 from sklearn.cluster import KMeans
 from scipy.optimize import linear_sum_assignment as linear_assignment
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import r2_score
 from sklearn import svm
+from sklearn.model_selection import KFold
 
 
 def load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path, shared_s, modality_specific_s):
@@ -38,7 +40,7 @@ def load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path,
     return ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 
 
-def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UKB'):
+def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UKB', get_trainset=False):
     if data=='UKB':
         ecg_pheno = ['PQInterval', 'QTInterval','QTCInterval','QRSDuration','RRInterval']
         mri_pheno = ['LA_2Ch_vol_max', 'LA_2Ch_vol_min', 'LA_4Ch_vol_max', 'LA_4Ch_vol_min', 'LVEDV', 'LVEF',
@@ -56,7 +58,7 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
         # reordered_sample_list = common_elements
         n_samples = len(reordered_sample_list)
         # n_train = int(train_ratio*n_samples)
-        n_train = 10000
+        n_train = 5000
         n_test = int(test_ratio*n_samples)
         
         train_list = reordered_sample_list[-n_train:]
@@ -73,7 +75,10 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
         print("Trainloader length: ", len(trainset), len(validset), len(testset))
         valid_loader = DataLoader(validset, batch_size=32, shuffle=False, drop_last=False)
         test_loader = DataLoader(testset, batch_size=32, shuffle=False, drop_last=False)
-        return train_loader, valid_loader, test_loader, (train_list, valid_list, test_list)
+        if get_trainset:
+            return train_loader, valid_loader, test_loader, (train_list, valid_list, test_list), trainset
+        else:
+            return train_loader, valid_loader, test_loader, (train_list, valid_list, test_list)
  
 def load_data_affect():
         with open('/home/sana/multimodal/data/affect/mosi_data.pkl', "rb") as f:
@@ -128,10 +133,10 @@ def plot_sample(batch, num_cols, num_rows, save_path):
         for col in range(num_cols):
             index = row * num_cols + col
             plt.subplot(num_rows, num_cols, index + 1)
-            if len(batch[index,...,0].shape)==1:
-                plt.plot(batch[index,...,0])
-            elif len(batch[index,...,0].shape)==2:
-                plt.imshow(batch[index,...,0])
+            if len(batch[index][...,0].shape)==1:
+                plt.plot(batch[index][...,0])
+            elif len(batch[index][...,0].shape)==2:
+                plt.imshow(batch[index][...,0])
             plt.axis("off")
     plt.tight_layout()
     plt.savefig(save_path)
@@ -171,9 +176,8 @@ def pca_analysis(data, model, modality_name, percentile=0.25):
 
     return top_pos_samples_s, top_neg_samples_s, top_pos_samples_m, top_neg_samples_m
 
-def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None, n_pca=None):
+def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None, n_pca=None): 
     phenotypes_scores = {}
-    # TODO check for classification setting
     if mask is not None:
         if tf.reduce_sum(mask)==0:
             for pheno in phenotypes:
@@ -181,29 +185,69 @@ def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None,
             return phenotypes_scores
         z_test = np.take(z_test, np.argwhere(mask==1)[:,0], axis=1)
         z_train = np.take(z_train, np.argwhere(mask==1)[:,0], axis=1)
-    if n_pca is not None:
-        pca = PCA(n_components=n_pca)
-        z_train = pca.fit_transform(z_train)
-        z_test = pca.transform(z_test)
-    print('Dataset shape: ', z_test.shape, z_train.shape)
+    print("Representation size: ", z_train.shape[-1])
     for pheno in phenotypes:
-        # predictor = LinearRegression()
-        # predictor = KernelRidge()
-        predictor = svm.SVR()
-        predictor.fit(z_train, y_train[pheno].to_numpy())
-        z_pred_train = predictor.predict(z_train)
-        z_pred = predictor.predict(z_test)
-        # print('predicted:', z_pred[:5])
-        # print('label:', y_test[pheno].to_numpy()[:5])
-        # r2_test = (((z_pred - y_test[pheno].to_numpy())**2).mean())/(((y_test[pheno].to_numpy() - y_test[pheno].to_numpy().mean())**2).mean())
-        # r2_train = (((z_pred_train - y_train[pheno].to_numpy())**2).mean())/(((y_train[pheno].to_numpy() - y_train[pheno].to_numpy().mean())**2).mean())
-        r2_test = r2_score(y_test[pheno].to_numpy(), z_pred)
-        r2_train = r2_score(y_train[pheno].to_numpy(), z_pred_train)
-        # correlations = np.corrcoef(z_test.reshape(len(z_test), -1), y_test[pheno].to_numpy(), rowvar=False)[:len(z_test), -1]
-        correlations = np.corrcoef(z_pred, y_test[pheno].to_numpy(), rowvar=False)
-        print("Pearson correlation of %s: %.5f"%(pheno, correlations.mean()))
-        # r2 = predictor.score(z_test, y_test[pheno].to_numpy())
-        phenotypes_scores[pheno] = (r2_train, r2_test)
+        if n_pca==0 or z_train.shape[-1]==0:
+            phenotypes_scores[pheno] = [[0],[0]]
+        if len(np.unique(y_train[pheno].to_numpy()))==2:
+            auc_test, auc_train = [], []
+            kf = KFold(n_splits=4)
+            # kf.get_n_splits(z_train)
+            # KFold(n_splits=2, random_state=None, shuffle=False)
+            for i, (train_index, test_index) in enumerate(kf.split(z_train)):
+                predictor = RidgeClassifier(alpha=1)
+                X_train = z_train[train_index]
+                X_test = z_train[test_index]
+                Y_train = y_train[pheno].to_numpy()[train_index]
+                Y_test = y_train[pheno].to_numpy()[test_index]
+                if n_pca is not None and n_pca<X_train.shape[-1]:
+                    pca = PCA(n_components=n_pca)
+                    X_train = pca.fit_transform(X_train)
+                    X_test = pca.transform(X_test)
+                predictor.fit(X_train, Y_train)
+                z_pred_train = predictor.predict(X_train)
+                z_pred = predictor.predict(X_test)
+                auc_test.append(roc_auc_score(Y_test, z_pred))
+                auc_train.append(roc_auc_score(Y_train, z_pred_train))
+            # predictor.fit(z_train, y_train[pheno].to_numpy())
+            # z_pred_train = predictor.predict(z_train)
+            # z_pred = predictor.predict(z_test)
+            # auc_test = roc_auc_score(y_test[pheno].to_numpy(), z_pred)
+            # auc_train = roc_auc_score(y_train[pheno].to_numpy(), z_pred_train)
+            phenotypes_scores[pheno] = [auc_train, auc_test]
+        else:
+            r2_test, r2_train = [], []
+            kf = KFold(n_splits=4)
+            # kf.get_n_splits(z_train)
+            # KFold(n_splits=2, random_state=None, shuffle=False)
+            for i, (train_index, test_index) in enumerate(kf.split(z_train)):
+                predictor = KernelRidge(alpha=0.5)
+                X_train = z_train[train_index]
+                X_test = z_train[test_index]
+                Y_train = y_train[pheno][train_index]
+                Y_test = y_train[pheno][test_index]
+                if n_pca is not None and n_pca<X_train.shape[-1]:
+                    pca = PCA(n_components=n_pca)
+                    X_train = pca.fit_transform(X_train)
+                    X_test = pca.transform(X_test)
+                # predictor = svm.SVR(C=0.1)
+                predictor.fit(X_train, Y_train)
+                z_pred_train = predictor.predict(X_train)
+                z_pred = predictor.predict(X_test)
+                r2_test.append(r2_score(Y_test, z_pred))
+                r2_train.append(r2_score(Y_train, z_pred_train))
+            # predictor = Ridge(alpha=2)
+            # predictor = svm.SVR(C=0.1)
+            # predictor.fit(z_train, y_train[pheno].to_numpy())
+            # z_pred_train = predictor.predict(z_train)
+            # z_pred = predictor.predict(z_test)
+            # r2_test = r2_score(y_test[pheno].to_numpy(), z_pred)
+            # r2_train = r2_score(y_train[pheno].to_numpy(), z_pred_train)
+            # # correlations = np.corrcoef(z_test.reshape(len(z_test), -1), y_test[pheno].to_numpy(), rowvar=False)[:len(z_test), -1]
+            # correlations = np.corrcoef(z_pred, y_test[pheno].to_numpy(), rowvar=False)
+            # print("Pearson correlation of %s: %.5f"%(pheno, correlations.mean()))
+            # r2 = predictor.score(z_test, y_test[pheno].to_numpy())
+            phenotypes_scores[pheno] = [r2_train, r2_test]
     return phenotypes_scores
 
 def cluster_test(df, n_clusters=5, original_modality="ecg"):
@@ -228,6 +272,32 @@ def cluster_test(df, n_clusters=5, original_modality="ecg"):
     s1 = hungarian_match(all_labels["ground_truth"], all_labels["z"], n_clusters)
     s2 = hungarian_match(all_labels["ground_truth"], all_labels["zm_other"], n_clusters)
     return [s1, s2]
+
+def plot_pheno_prediction_performance(phenotypes, perf_results, labels, tag):
+    for phenotype in phenotypes:
+        x = np.arange(len(labels))  # the label locations
+        width = 0.4  # the width of the bars
+        multiplier = 0
+        fig, ax = plt.subplots(layout='constrained', figsize=(14, 4))
+        scores = {'train':[np.mean(s[phenotype][0]) for s in perf_results],
+         'test':[np.mean(s[phenotype][1]) for s in perf_results]}
+        scores_std = {'train':[np.std(s[phenotype][0]) for s in perf_results],
+         'test':[np.std(s[phenotype][1]) for s in perf_results]}
+        for attribute, measurement in scores.items():
+            offset = width * multiplier
+            rounded_list = [round(m*1000)/1000 for m in measurement]
+            rects = ax.bar(x + offset, rounded_list, width, label=attribute)
+            ax.errorbar(x + offset, rounded_list, yerr=scores_std[attribute], fmt="o", color="black")
+            ax.bar_label(rects, padding=3)
+            multiplier += 1
+        # Add some text for labels, title and custom x-axis tick labels, etc.
+        ax.set_ylabel('R^2')
+        ax.set_title(phenotype)
+        ax.set_xticks(x + width, labels, rotation=70)
+        # ax.xticks(rotation=70)
+        ax.legend(loc='upper left', ncols=4)
+        plt.savefig("/home/sana/multimodal/plots/%s_%s.pdf"%(phenotype,tag))
+        fig.clf()
 
 
 def hungarian_match(y, y_hat, n_clusters):   

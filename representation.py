@@ -6,6 +6,8 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.decomposition import PCA
+import gc
 # from tf_agents.distributions.gumbel_softmax import GumbelSoftmax 
 sns.set_theme()
 # from keras.utils.layer_utils import count_params
@@ -31,16 +33,18 @@ class MultimodalRep():
         self.modality_shapes = modality_shapes
         self.beta = beta
         self.merged_size = None
+        # self.z_sizes_masked = z_sizes.copy()
+        # self.shared_size_masked = shared_size.copy()
         
         self.posterior_means = {}
         for mod, z_size in z_sizes.items():
             self.posterior_means[mod] = tf.Variable(tf.random.normal((self.n_train,(z_size))))
         # self.posterior_means = [tf.Variable(tf.random.normal((self.n_train,(z_size))), trainable=True) for z_size in z_sizes.values()]
         self.shared_post_mean = tf.Variable(tf.random.normal((self.n_train,(shared_size))), trainable=True)
-        self.shared_mask = LearnableMask(shared_size)
+        self.shared_mask = LearnableMask(shared_size, init_mask_val=(1 if self.mask else 50))
         self.modality_masks = {}
         for modality_name, z_size in self.z_sizes.items():
-            self.modality_masks[modality_name] = LearnableMask(z_size)
+            self.modality_masks[modality_name] = LearnableMask(z_size, init_mask_val=(0 if self.mask else 50))
         
         # models
         self.encoders, self.decoders = {}, {}
@@ -63,13 +67,15 @@ class MultimodalRep():
         #         k.trainable = False
         #     for k,v in decoder._get_trainable_state().items():
         #         k.trainable = False
-        # for layer in encoder.layers:
-        #     layer.trainable = False
+        for layer in encoder.layers:
+            layer.trainable = False
         inputs = keras.Input(shape=input_size, dtype=tf.float32)
         x = encoder(inputs, training=False)
         # fc1 = keras.layers.Dense(512, name='l1', activation='relu')(x[0])
         output1 = keras.layers.Dense(z_m_size, name='modality')(x[0])
+                                    #  kernel_initializer=keras.initializers.Constant(value=0.01))(x[0])
         output2 = keras.layers.Dense(z_s_size, name='shared')(x[0])
+                                    #  kernel_initializer=keras.initializers.Constant(value=0.01))(x[0])
         # encoder = keras.Model(inputs=inputs, outputs=[output1, output2, x])
         encoder = keras.models.Model(inputs=inputs, outputs=[output1, output2, x[0]])
         # reps = keras.Input(shape=(z_m_size+z_s_size)) 
@@ -89,27 +95,23 @@ class MultimodalRep():
             self.encoders[modal_name].load_weights(os.path.join(ckpt_path, (modal_name+"_encoder.weights.h5")))
             self.decoders[modal_name].load_weights(os.path.join(ckpt_path, (modal_name+"_decoder.weights.h5")))
             self.posterior_means[modal_name] = np.load(os.path.join(ckpt_path, "modality_z_%s.npy"%modal_name))
-            self.modality_masks[modal_name].mask = np.load(os.path.join(ckpt_path, "mask_%s.npy"%modal_name))
+            self.modality_masks[modal_name].mask_logits = np.load(os.path.join(ckpt_path, "mask_%s.npy"%modal_name))
             self.modality_masks[modal_name].binary_mask = np.load(os.path.join(ckpt_path, "mask_%s_bin.npy"%modal_name))
-            # self.modality_masks[modal_name].binary_mask = tf.where(tf.math.is_nan(self.modality_masks[modal_name].binary_mask), 
-            #                                     tf.ones_like(self.modality_masks[modal_name].binary_mask), 
-            #                                     self.modality_masks[modal_name].binary_mask)
+            # self.z_sizes_masked[modal_name] = int(np.sum(self.modality_masks[modal_name].binary_mask))
             self.modality_masks[modal_name].temperature = 0.2
             self.modality_masks[modal_name].trainable = False
-            print(tf.sigmoid(self.modality_masks[modal_name].mask))
+            print(tf.sigmoid(self.modality_masks[modal_name].mask_logits))
             print(self.modality_masks[modal_name].test())
             print('Percentage of selected features for %s: '%modal_name, tf.math.reduce_sum(self.modality_masks[modal_name].binary_mask)/self.z_sizes[modal_name])
-        self.shared_post_mean = np.load('/home/sana/multimodal/ckpts/shared_z.npy')
-        self.shared_mask.mask = np.load('/home/sana/multimodal/ckpts/shared_mask.npy')
-        self.shared_mask.binary_mask = np.load('/home/sana/multimodal/ckpts/shared_mask_bin.npy')
-        # self.shared_mask.binary_mask = tf.where(tf.math.is_nan(self.shared_mask.binary_mask), 
-        #                                         tf.ones_like(self.shared_mask.binary_mask), 
-        #                                         self.shared_mask.binary_mask)
+        self.shared_post_mean = np.load(os.path.join(ckpt_path,'shared_z.npy'))
+        self.shared_mask.mask_logits = np.load(os.path.join(ckpt_path,'shared_mask.npy'))
+        self.shared_mask.binary_mask = np.load(os.path.join(ckpt_path,'shared_mask_bin.npy'))
         self.shared_mask.temperature = 0.2
         self.shared_mask.trainable = False
         self._set_trainable_mask(trainable=False)
+        self.shared_size_masked = int(np.sum(self.shared_mask.binary_mask))
         print('Percentage of selected features for shared z: ', tf.math.reduce_sum(self.shared_mask.binary_mask)/self.shared_size)
-        print(tf.sigmoid(self.shared_mask.mask))
+        print(tf.sigmoid(self.shared_mask.mask_logits))
         print(self.shared_mask.test())
     
     def train(self, trainloader, lr_enc=0.001, lr_dec=0.001, epochs_enc=20, epochs_dec=20):
@@ -123,34 +125,44 @@ class MultimodalRep():
         optimizer_2 = tf.keras.optimizers.Adam(learning_rate=lr_dec, clipvalue=1)
         optimizer_3 = tf.keras.optimizers.Adam(learning_rate=lr_dec, clipvalue=1)
         optimizer_4 = tf.keras.optimizers.Adam(learning_rate=lr_enc, clipvalue=1)
-        # self.mask=False ## This only makes sure during the first decoder training, we don't update mask
         for iter_round in range(n_rounds):
-            # dec_loss.extend(self.train_decoder(trainloader, lr_dec, epochs_dec, optimizer_1))
-            for _ in range (2):
-                m_loss.extend(self.optimize_modality_latent(trainloader, lr_dec, epochs_dec, optimizer_2))
+            m_loss.extend(self.optimize_modality_latent(trainloader, lr_dec, epochs_dec, optimizer_2))
             shared_loss.extend(self.optimize_shared_latent(trainloader, lr_dec, epochs_dec, optimizer_3))
             enc_loss.extend(self.train_encoder(trainloader, lr_enc, epochs_enc, optimizer_4))
-            # self.mask=True
+            shared_mask.append(self.shared_mask.binary_mask.numpy())
+            
             # Annealing temperature
             for modality_name, z_size in self.z_sizes.items():
                 self.modality_masks[modality_name].temperature = tf.convert_to_tensor(initial_temperature * np.exp(-anneal_rate*(iter_round)), dtype=tf.float32)
-                print("Modality mask: ", self.modality_masks[modality_name].mask[:5])
                 self.shared_mask.temperature = tf.convert_to_tensor(initial_temperature * np.exp(-anneal_rate*(iter_round)), dtype=tf.float32)
-            print("Shared mask: ", self.shared_mask.mask[:5])
-            print("Temperature: ", self.modality_masks[modality_name].temperature)
             # Track mask updates
             shared_mask.append(self.shared_mask.binary_mask.numpy())
             for mod in self.modality_names:
                 modality_specific_masks[mod].append(self.modality_masks[mod].binary_mask.numpy())
+            tf.keras.backend.clear_session()
+            gc.collect() 
+
+            # Prepare the data as a dictionary or list of lists
+            train_tracker = {
+                "modality loss": m_loss,
+                "shared loss": shared_loss,
+                "encoder loss": enc_loss,
+                "shared mask": shared_mask,
+                "modality mask": modality_specific_masks,
+            }
+            with open('train_tracker.json', 'w') as file:
+                json.dump(train_tracker, file, indent=4)
+        
         # Plot masks over iterations 
         f, axs = plt.subplots(self.n_modalitites+1, 1)
         for nn, ax in enumerate(axs):
             if nn == self.n_modalitites:
                 sns.heatmap(np.array(shared_mask), ax=ax)
-                ax.set_xlabel('Shared mask')
+                ax.set_ylabel('Shared mask')
             else:
                 sns.heatmap(np.array(modality_specific_masks[self.modality_names[nn]]), ax=ax)
-                ax.set_xlabel(self.modality_names[nn])
+        axs[0].set_ylabel('ECG')
+        axs[1].set_ylabel('MRI')
         plt.savefig("/home/sana/multimodal/plots/masks.pdf")
         return dec_loss, enc_loss, shared_loss, m_loss
 
@@ -202,24 +214,25 @@ class MultimodalRep():
     #     return loss_trend
     
     def optimize_modality_latent(self, trainloader, lr, n_epochs, optimizer):
-        print(">>>>> Training the modality-specific latent ...")
+        # print(">>>>> Training the modality-specific latent ...")
         loss_fn = tf.keras.losses.MeanSquaredError()
         loss_trend = []  
-        for modality_name, z_size in self.z_sizes.items():
-            self.modality_masks[modality_name].trainable = False
-        self.shared_mask.trainable = True
+        if self.mask:
+            for modality_name in self.modality_names:
+                self.modality_masks[modality_name].trainable = False
+            self.shared_mask.trainable = True
         for epoch in range(n_epochs):
             batch_ind = 0
             for data,_ in trainloader:
-                loss = (self.beta*(self.shared_mask.l1())+50*(self.shared_mask.entropy_regularization()))
+                loss = (self.beta*(self.shared_mask.l1())+(10*self.shared_mask.entropy_regularization())) if self.mask else 0
                 with tf.GradientTape() as tape:
-                    trainable_var = [self.shared_mask.mask]
+                    trainable_var = [self.shared_mask.mask_logits] if self.mask else []
                     for m_ind, (mod, z) in enumerate(self.posterior_means.items()):
                         x_m = tf.convert_to_tensor(data[mod])
                         batch_size = x_m.shape[0]
                         noise = tf.random.normal(shape=(batch_size ,self.z_sizes[mod]+self.shared_size), mean=0.0, stddev=0.05)
                         prev_modality = self.modality_names[m_ind-1 if m_ind>0 else self.n_modalitites-1]
-                        _,z_s_other, z_other = self.encoders[prev_modality](tf.convert_to_tensor(data[prev_modality]))
+                        _, z_s_other, _ = self.encoders[prev_modality](tf.convert_to_tensor(data[prev_modality]))
                         z_s_other = self.shared_mask(z_s_other)
                         z_m = self.modality_masks[mod](z[batch_ind:batch_ind+batch_size])
                         reconst = self.decoders[mod](tf.concat([z_m, z_s_other], -1)+noise)
@@ -232,13 +245,13 @@ class MultimodalRep():
                         trainable_var.extend(self.decoders[mod].trainable_variables)
                 gradients = tape.gradient(loss, trainable_var)
                 clipped_gradients = [tf.clip_by_value(grad, -1.0, 1.0) for grad in gradients]
-                optimizer.apply_gradients(zip(clipped_gradients, trainable_var))
+                optimizer.apply_gradients(zip(gradients, trainable_var))
                 batch_ind += batch_size         
                 del tape   
             # print(f"Epoch {epoch+1}/{n_epochs}, Loss: {loss.numpy()}")
             loss_trend.append(loss.numpy())      
         if not np.isnan(loss.numpy()):
-            np.save('/home/sana/multimodal/ckpts/shared_mask', self.shared_mask.mask.numpy())
+            np.save('/home/sana/multimodal/ckpts/shared_mask', self.shared_mask.mask_logits.numpy())
             np.save('/home/sana/multimodal/ckpts/shared_mask_bin', self.shared_mask.binary_mask.numpy())
             for mod, zm in self.posterior_means.items():
                 self.decoders[mod].save_weights("/home/sana/multimodal/ckpts/%s_decoder.weights.h5"%(mod))
@@ -248,19 +261,20 @@ class MultimodalRep():
         return loss_trend
     
     def optimize_shared_latent(self, trainloader, lr, n_epochs, optimizer):
-        print(">>>>> Training the shared latent representation ...")
+        # print(">>>>> Training the shared latent representation ...")
         loss_fn = tf.keras.losses.MeanSquaredError()
         # optimizer = tf.keras.optimizers.Adam(learning_rate=lr, clipvalue=1)
         loss_trend = []
-        for modality_name, z_size in self.z_sizes.items():
-            self.modality_masks[modality_name].trainable = True
-        self.shared_mask.trainable = False
+        if self.mask:
+            for modality_name in self.modality_names:
+                self.modality_masks[modality_name].trainable = True
+            self.shared_mask.trainable = False
         for epoch in range(n_epochs):
             batch_ind = 0
             for data, _ in trainloader:
-                loss = 0#(self.beta*(self.shared_mask.l1())+100*(self.shared_mask.entropy_regularization()))
-                trainable_var = [self.shared_post_mean] #+ [self.shared_mask.mask]
+                loss = 0 #(self.beta*(self.shared_mask.l1())+10*(self.shared_mask.entropy_regularization()))
                 with tf.GradientTape() as tape:
+                    trainable_var = [self.shared_post_mean] #+ [self.shared_mask.mask]
                     for (mod, z) in self.posterior_means.items():
                         x_m = tf.convert_to_tensor(data[mod])
                         batch_size = x_m.shape[0]
@@ -270,13 +284,15 @@ class MultimodalRep():
                         reconst = self.decoders[mod](tf.concat([z_m, z_s], -1)+noise)
                         # loss += loss_fn(x_m,reconst)
                         loss += tf.reduce_mean((x_m-reconst)**2)
-                        trainable_var.extend([self.modality_masks[mod].mask])
                         trainable_var.extend(self.decoders[mod].trainable_variables)
-                        loss += self.beta*(self.modality_masks[mod].l1()) + 10*(self.modality_masks[mod].entropy_regularization())
+                        # trainable_var.extend([self.shared_mask.mask])
+                        if self.mask:
+                            trainable_var.extend([self.modality_masks[mod].mask_logits])
+                            loss += self.beta*(self.modality_masks[mod].l1()) + (10*self.modality_masks[mod].entropy_regularization())
                     loss += 0.01*tf.reduce_mean(self.shared_post_mean[batch_ind:batch_ind+batch_size]**2)
                 gradients = tape.gradient(loss, trainable_var)
                 clipped_gradients = [tf.clip_by_value(grad, -1.0, 1.0) for grad in gradients]
-                optimizer.apply_gradients(zip(clipped_gradients, trainable_var))
+                optimizer.apply_gradients(zip(gradients, trainable_var))
                 batch_ind += batch_size  
                 del tape          
             # print(f"Epoch {epoch+1}/{n_epochs}, Loss: {loss.numpy()}")
@@ -284,16 +300,18 @@ class MultimodalRep():
             # np.save('/home/sana/multimodal/ckpts/shared_mask_bin', self.shared_mask.binary_mask.numpy())
             loss_trend.append(loss.numpy())  
         if not np.isnan(loss.numpy()):
+            # np.save('/home/sana/multimodal/ckpts/shared_mask', self.shared_mask.mask.numpy())
+            # np.save('/home/sana/multimodal/ckpts/shared_mask_bin', self.shared_mask.binary_mask.numpy())
             for mod, zm in self.posterior_means.items():
                 self.decoders[mod].save_weights("/home/sana/multimodal/ckpts/%s_decoder.weights.h5"%(mod))
-                np.save('/home/sana/multimodal/ckpts/mask_%s'%mod, self.modality_masks[mod].mask.numpy())
+                np.save('/home/sana/multimodal/ckpts/mask_%s'%mod, self.modality_masks[mod].mask_logits.numpy())
                 np.save('/home/sana/multimodal/ckpts/mask_%s_bin'%mod, self.modality_masks[mod].binary_mask.numpy())
             np.save("/home/sana/multimodal/ckpts/shared_z", self.shared_post_mean.numpy())
-        print('Shared rep. Loss: ', np.mean(loss_trend))
+        # print('Shared rep. Loss: ', np.mean(loss_trend))
         return loss_trend
     
     def train_encoder(self, trainloader, lr, n_epochs, optimizer):
-        print(">>>>> Training the encoder ...")
+        # print(">>>>> Training the encoder ...")
         # loss_fn = keras.losses.MeanSquaredError()
         # optimizer = keras.optimizers.Adam(learning_rate=lr, clipvalue=1)
         loss_trend = []
@@ -302,8 +320,8 @@ class MultimodalRep():
             batch_ind = 0
             for data,_ in trainloader:
                 loss = 0
-                trainable_var = []
                 with tf.GradientTape() as tape:
+                    trainable_var = []
                     for (mod, z) in self.posterior_means.items():
                         x_m = tf.convert_to_tensor(data[mod])
                         batch_size = x_m.shape[0]
@@ -312,18 +330,18 @@ class MultimodalRep():
                         mod_mse = (z[batch_ind:batch_ind+batch_size]-z_m)**2
                         shared_loss = tf.reduce_mean(self.shared_mask(shared_mse))
                         modality_loss = tf.reduce_mean(self.modality_masks[mod](mod_mse))
-                        loss += 5*shared_loss + modality_loss
+                        loss += shared_loss + modality_loss
                         trainable_var.extend(self.encoders[mod].trainable_variables)
                 gradients = tape.gradient(loss, trainable_var)
                 clipped_gradients = [tf.clip_by_value(grad, -1.0, 1.0) for grad in gradients]
-                optimizer.apply_gradients(zip(clipped_gradients, trainable_var))
+                optimizer.apply_gradients(zip(gradients, trainable_var))
                 del tape
                 batch_ind += batch_size 
             loss_trend.append(loss.numpy())  
         if not np.isnan(loss.numpy()):
             for (mod, encoder) in self.encoders.items():
                 encoder.save_weights("/home/sana/multimodal/ckpts/%s_encoder.weights.h5"%(mod))
-        print('Encoder Loss: ', np.mean(loss_trend))
+        # print('Encoder Loss: ', np.mean(loss_trend))
         return loss_trend
     
     def merge_representations(self, x_batch):
@@ -339,11 +357,54 @@ class MultimodalRep():
                 shared_mask = self.shared_mask.binary_mask
                 z_s = np.take(z_s, np.argwhere(shared_mask==1)[:,0], axis=1)
                 z_s_all.append(z_s)
-        z = tf.concat(z_m_all+[z_s_all[0]], axis=-1)
-        # z = tf.concat(z_m_all+[tf.reduce_mean(z_s_all, 0)], axis=-1)
+        # z = tf.concat(z_m_all+[z_s_all[0]], axis=-1)
+        z = tf.concat(z_m_all+[tf.reduce_mean(z_s_all, 0)], axis=-1)
         # z = tf.concat(z_m_all+[z_s_all[1]], axis=-1)
         self.merged_size = z.shape[-1]
         return z
+
+    def generate_sample(self, x_batch, ind, ref_modality, target_modality, variation=False, n_samples=1, n_pca=0):
+        self._set_trainable_mask(trainable=False)
+        x_m = tf.convert_to_tensor(x_batch[ref_modality][ind])
+        # Learn the shared space using reference modality
+        z_ref, z_s, _ = self.encoders[ref_modality](tf.expand_dims(x_m,0))
+        z_s = self.shared_mask(z_s)
+        z_ref = self.modality_masks[ref_modality](z_ref)
+        if variation:
+            # Pick the top PCA samples of the missing modality (from its distribution)
+            pca_m = PCA(n_components=z_sizes[target_modality], svd_solver='full')
+            z_m_projected = pca_m.fit_transform(self.posterior_means[target_modality])
+            max_pc_zs_inds = z_m_projected[:,n_pca].argsort()[-n_samples:]
+            min_pc_zs_inds = z_m_projected[:,n_pca].argsort()[:n_samples]
+            top_pos_samples_m = np.take(self.posterior_means[target_modality], max_pc_zs_inds, 0)
+            top_neg_samples_m = np.take(self.posterior_means[target_modality], min_pc_zs_inds, 0)       
+            modality_mask = self.modality_masks[target_modality].binary_mask
+            top_pos_samples_m = self.modality_masks[target_modality](top_pos_samples_m)
+            top_neg_samples_m = self.modality_masks[target_modality](top_neg_samples_m)
+            z_m = tf.concat((top_pos_samples_m,top_neg_samples_m), 0)
+            z_s = tf.repeat(z_s, len(z_m), 0)
+            reconst_sample = self.decoders[target_modality](tf.concat([z_m, z_s], -1))
+            return reconst_sample, list(max_pc_zs_inds), list(min_pc_zs_inds)
+        else:
+            z_ref_m = self.modality_masks[ref_modality](self.posterior_means[ref_modality])
+            z_ref_s = self.shared_mask(self.shared_post_mean)
+            z_ref_dist = tf.concat([z_ref_m, z_ref_s], -1)
+            z_ref = tf.concat([z_ref, z_s], -1)
+            # Normalize 
+            z_ref = tf.nn.l2_normalize(z_ref, axis=1)  # Shape: (1, D)
+            z_ref_dist = tf.nn.l2_normalize(z_ref_dist, axis=1)  # Shape: (N, D)
+            # Compute cosine similarity
+            cosine_similarity = tf.matmul(z_ref_dist, z_ref, transpose_b=True)
+            cosine_similarity = tf.reshape(cosine_similarity, shape=(len(z_ref_dist),))  # Shape: (N,)
+            # Find the top k most similar embeddings
+            sample_probs = cosine_similarity/tf.reduce_sum(cosine_similarity)
+            _, top_k_indices = tf.nn.top_k(cosine_similarity, k=n_samples)
+            similar_samples = np.take(self.posterior_means[target_modality], top_k_indices, 0)
+            similar_sample_probs = np.take(sample_probs, top_k_indices, 0)
+            z_m = self.modality_masks[target_modality](similar_samples)
+            z_s = tf.repeat(z_s, len(z_m), 0)
+            reconst_sample = self.decoders[target_modality](tf.concat([z_m, z_s], -1))
+            return reconst_sample, similar_sample_probs, x_m
 
     def encode(self, x_batch, remove_masks=False):
         self._set_trainable_mask(trainable=False)
@@ -368,7 +429,7 @@ class MultimodalRep():
         if modality_name is None:
             x_recon = {}
             for m_ind, (mod, decoder) in enumerate((self.decoders).items()):
-                noise = tf.random.normal(shape=(z_m_all[mod].shape[0] ,self.z_sizes[mod]+self.shared_size), mean=0.0, stddev=0.2)
+                noise = tf.random.normal(shape=(z_m_all[mod].shape[0] ,z_m_all[mod].shape[1]+z_s_all[mod].shape[1]), mean=0.0, stddev=0.05)
                 if x is None: # Decode using the shared representation of the encoder
                     if self.mask:
                         x_recon[mod] = decoder(tf.concat([self.modality_masks[mod](z_m_all[mod]), 
@@ -385,7 +446,7 @@ class MultimodalRep():
                         x_recon[mod] = decoder(tf.concat([z_m_all[mod], conditional_input], -1)+noise)
         else:
             decoder = self.decoders[modality_name]
-            noise = tf.random.normal(shape=(z_m_all.shape[0] ,self.z_sizes+self.shared_size), mean=0.0, stddev=0.2)
+            noise = tf.random.normal(shape=(z_m_all.shape[0] ,self.z_sizes+self.shared_size), mean=0.0, stddev=0.05)
             if x is None:
                 if self.mask:
                     x_recon[mod] = decoder(tf.concat([self.modality_masks[modality_name](z_m_all), 
@@ -423,25 +484,24 @@ class MultimodalUKBDataset(Dataset):
 
 
 class LearnableMask(keras.layers.Layer):
-    def __init__(self, input_dim, temperature=1.0, straight_through=True):
-        # TODO: Understand the Nan problem with temperature
+    def __init__(self, input_dim, temperature=1.0, straight_through=True, init_mask_val=0):
         super(LearnableMask, self).__init__()
-        self.mask = tf.Variable(initial_value=tf.zeros(input_dim), trainable=True)
+        self.mask_logits = tf.Variable(initial_value=tf.zeros(input_dim)+init_mask_val, trainable=True)
         self.temperature = temperature
         self.straight_through = straight_through
         self.trainable = True
-        self.binary_mask = tf.round(self.gumbel_softmax(self.mask))
+        self.binary_mask = tf.round(self.gumbel_softmax(self.mask_logits))
 
     def mask_size(self):
         return tf.reduce_sum(self.binary_mask)
 
     def l1(self):
-        # mask = self.gumbel_softmax(self.mask)
-        mask = tf.sigmoid(self.mask)
+        # mask = self.gumbel_softmax(self.mask_logits)
+        mask = tf.sigmoid(self.mask_logits)
         return tf.reduce_sum(mask)
 
     def entropy_regularization(self):
-        mask = tf.sigmoid(self.mask)
+        mask = tf.sigmoid(self.mask_logits)
         mask = tf.clip_by_value(mask, 1e-3, 1 - 1e-3) 
         entropy = -mask * tf.math.log(mask) - (1 - mask) * tf.math.log(1 - mask)
         entropy_loss = tf.reduce_sum(entropy)
@@ -450,16 +510,12 @@ class LearnableMask(keras.layers.Layer):
     def gumbel_softmax(self, logits, n_samples=0.2):
         probs = tf.sigmoid(logits)
         probs = tf.clip_by_value(probs, 1e-3, 1 - 1e-3) 
-        # dist = logistic.Logistic(logits/self.temperature, 1./self.temperature)
-        # samples = dist.sample()
-        # print('********', logits)
         distribution = tfp.distributions.RelaxedBernoulli(self.temperature, probs=probs, allow_nan_stats=False)
-        # print(distribution.sample())
         sample = distribution.sample()
         return tf.clip_by_value(sample, 1e-12, 1.)
     
     def test(self):
-        return self.gumbel_softmax(self.mask)
+        return self.gumbel_softmax(self.mask_logits)
 
     def call(self, x):
         # Gumbel-Softmax Sampling
@@ -467,12 +523,8 @@ class LearnableMask(keras.layers.Layer):
         if self.trainable is False:
             return self.binary_mask * x
         else:
-            mask = self.gumbel_softmax(self.mask)
+            mask = self.gumbel_softmax(self.mask_logits)
             self.binary_mask = tf.round(mask)
             return x * mask  # Element-wise multiplication
-    
-    # def get_binary_mask(self):
-    #     bin_mask = tf.reduce_mean(self.gumbel_softmax(self.mask, n_samples=1), 0)
-    #     bin_mask = tf.round(bin_mask)
-    #     return bin_mask
+ 
     
