@@ -17,7 +17,7 @@ from ml4h.tensormap.ukb.ecg import ecg_rest_median_raw_10
 from ml4h.tensormap.ukb.mri import lax_4ch_heart_center
 
 from sklearn.decomposition import PCA
-from sklearn.linear_model import Ridge, LogisticRegression, Lasso, LinearRegression, RidgeClassifier
+from sklearn.linear_model import Ridge, LogisticRegression, Lasso, SGDRegressor, RidgeClassifier, SGDClassifier
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.metrics import roc_auc_score
 from sklearn.cluster import KMeans
@@ -26,26 +26,32 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import r2_score
 from sklearn import svm
 from sklearn.model_selection import KFold
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
+def bnorm(x):
+    return (x-tf.reduce_mean(x))/tf.math.reduce_std(x)
 
-def load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path, shared_s, modality_specific_s):
+def load_pretrained_models(decoder_path_1, encoder_path_1, encoder_path_2, decoder_path_2, shared_s, modality_specific_s):
     # custom_dict = {'mish': tfa.activations.mish}
-    ecg_decoder = tf.keras.models.load_model(ecg_decoder_path)#, custom_objects=custom_dict)#, compile=False)
-    ecg_encoder = tf.keras.models.load_model(ecg_encoder_path)#, custom_objects=custom_dict)#, compile=False)
-    mri_encoder = tf.keras.models.load_model(mri_encoder_path)#, custom_objects=custom_dict)#, compile=False)
-    mri_decoder = tf.keras.models.load_model(mri_decoder_path)#, custom_objects=custom_dict)#, compile=False)
+    decoder_1 = tf.keras.models.load_model(decoder_path_1)#, custom_objects=custom_dict)#, compile=False)
+    encoder_1 = tf.keras.models.load_model(encoder_path_1)#, custom_objects=custom_dict)#, compile=False)
+    encoder_2 = tf.keras.models.load_model(encoder_path_2)#, custom_objects=custom_dict)#, compile=False)
+    decoder_2 = tf.keras.models.load_model(decoder_path_2)#, custom_objects=custom_dict)#, compile=False)
     # Randomly initialize decoder parameters
-    ecg_decoder = randomize_model_weight(ecg_decoder)
-    mri_decoder = randomize_model_weight(mri_decoder)
-    return ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
+    decoder_1 = randomize_model_weight(decoder_1)
+    decoder_2 = randomize_model_weight(decoder_2)
+    return decoder_1, encoder_1, encoder_2, decoder_2
 
 
-def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UKB', get_trainset=False):
+def load_data(sample_list, data_paths, n_train=None, train_ratio=0.9, test_ratio=0.05, data='UKB', get_trainset=False):
     if data=='UKB':
         ecg_pheno = ['PQInterval', 'QTInterval','QTCInterval','QRSDuration','RRInterval']
         mri_pheno = ['LA_2Ch_vol_max', 'LA_2Ch_vol_min', 'LA_4Ch_vol_max', 'LA_4Ch_vol_min', 'LVEDV', 'LVEF',
                     'LVESV', 'LVM', 'LVSV', 'RVEDV', 'RVEF', 'RVESV', 'RVSV']
         phenotype_df = pd.read_csv("/home/sana/tensors_all_union.csv")[ecg_pheno+mri_pheno+['fpath']]
+        dropfuse_test_ids = pd.read_csv("/home/sana/sample_id_returned_lv_mass.csv")['sample_id']
+        dropfuse_test_ids = [str(id)+'.hd5' for id in dropfuse_test_ids]
         phenotype_df.dropna(inplace=True)
         phenotype_df['fpath'] = phenotype_df['fpath'].astype(str) + '.hd5'
         eval_ids = phenotype_df['fpath']  # Patient ids for which we have phenotype labels
@@ -57,19 +63,23 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
         reordered_sample_list = common_elements + remaining_elements
         # reordered_sample_list = common_elements
         n_samples = len(reordered_sample_list)
-        # n_train = int(train_ratio*n_samples)
-        n_train = 5000
+        if n_train is None:
+            n_train = int(train_ratio*n_samples)
         n_test = int(test_ratio*n_samples)
         
         train_list = reordered_sample_list[-n_train:]
         # valid_list = reordered_sample_list[n_test:-n_train]
         # test_list = reordered_sample_list[:n_test]
-        valid_list = common_elements[:len(common_elements)//2]
-        test_list = common_elements[len(common_elements)//2:]
+        common_dropfuse = list(set(common_elements)&set(dropfuse_test_ids))
+        print(len(list(common_dropfuse)))
+        test_list = common_dropfuse[-16:]
+        valid_list = common_dropfuse[:-16]
+        # valid_list = common_elements[:len(common_elements)//2]
+        # test_list = common_elements[len(common_elements)//2:]
 
-        trainset = MultimodalUKBDataset(data_path, train_list)
-        validset = MultimodalUKBDataset(data_path, valid_list)
-        testset = MultimodalUKBDataset(data_path, test_list)
+        trainset = MultimodalUKBDataset(data_paths, train_list)
+        validset = MultimodalUKBDataset(data_paths, valid_list)
+        testset = MultimodalUKBDataset(data_paths, test_list)
 
         train_loader = DataLoader(trainset, batch_size=16, shuffle=False, drop_last=False)
         print("Trainloader length: ", len(trainset), len(validset), len(testset))
@@ -79,20 +89,8 @@ def load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, data='UK
             return train_loader, valid_loader, test_loader, (train_list, valid_list, test_list), trainset
         else:
             return train_loader, valid_loader, test_loader, (train_list, valid_list, test_list)
- 
-def load_data_affect():
-        with open('/home/sana/multimodal/data/affect/mosi_data.pkl', "rb") as f:
-            alldata = pickle.load(f)
-        train_keys = list(alldata['train']['id'])
-        print(alldata['train']['vision'].shape)
-        raw_path = '/home/sana/multimodal/data/affect/mosi_raw.pkl'
-        new_train_data = bert_version_data(alldata['train'], raw_path, train_keys)
-        print(new_train_data['vision'].shape)
-        print(new_train_data['audio'].shape)
-        print(new_train_data['text'].shape)
 
-
-def get_id_list(data_path, from_file=False, file_name="data_list.pkl"):
+def get_id_list(data_path, data_path_2=None, from_file=False, file_name="data_list.pkl"):
     if from_file:
         with open(file_name, "rb") as f:
             sample_list = pickle.load(f)
@@ -104,11 +102,21 @@ def get_id_list(data_path, from_file=False, file_name="data_list.pkl"):
             if os.path.isfile(os.path.join(data_path, f)):
                 try:
                     with h5py.File(f'{os.path.join(data_path, f)}', 'r') as hd5:
-                        # if (('ukb_cardiac_mri' in hd5) and ('ukb_ecg_rest' in hd5)):
-                        if all(["ukb_cardiac_mri/cine_segmented_lax_4ch/2" in hd5, "ukb_cardiac_mri/cine_segmented_lax_4ch_annotated_1" in hd5, "ukb_ecg_rest/ecg_rest_text" in hd5, "ukb_ecg_rest/median_I/instance_0" in hd5]):  
-                            sample_list.append(f)
-                        else:
-                            empty_files += 1
+                        if all(["ukb_cardiac_mri/cine_segmented_lax_4ch/2" in hd5, "ukb_cardiac_mri/cine_segmented_lax_4ch_annotated_1" in hd5]): 
+                            if data_path_2 is None:
+                                if all(["ukb_ecg_rest/ecg_rest_text" in hd5, "ukb_ecg_rest/median_I/instance_0" in hd5]):  
+                                    sample_list.append(f)
+                                else:
+                                    empty_files += 1
+                            else:
+                                try:
+                                    with h5py.File(f'{os.path.join(data_path_2, f)}', 'r') as hd5_2:
+                                        if "ukb_brain_mri/T1_brain_to_MNI/axial_135/instance_0" in hd5_2:
+                                            sample_list.append(f)
+                                        else:
+                                            empty_files += 1
+                                except:
+                                    empty_files += 1
                 except:
                     empty_files += 1
         for elem in exlusion_list:
@@ -176,6 +184,47 @@ def pca_analysis(data, model, modality_name, percentile=0.25):
 
     return top_pos_samples_s, top_neg_samples_s, top_pos_samples_m, top_neg_samples_m
 
+def phenotype_predictor_lf(z_train_1, y_train_1, z_train_2, y_train_2, phenotypes):
+    phenotypes_scores = {}
+    for pheno in phenotypes:
+        if len(np.unique(y_train_1[pheno].to_numpy()))==2:
+            auc_test, auc_train = [], []
+            kf = KFold(n_splits=4)
+            for i, (train_index, test_index) in enumerate(kf.split(z_train_1)):
+                predictor_1 = SGDClassifier()
+                predictor_2 = SGDClassifier()
+                predictor_1.fit(z_train_1[train_index], y_train_1[pheno].to_numpy()[train_index])
+                z1_pred_train = predictor_1.predict(z_train_1[train_index])
+                z1_pred = predictor_1.predict(z_train_1[test_index])
+                predictor_2.fit(z_train_2[train_index], y_train_2[pheno].to_numpy()[train_index])
+                z2_pred_train = predictor_2.predict(z_train_2[train_index])
+                z2_pred = predictor_2.predict(z_train_2[test_index])
+                z_pred_train = (z1_pred_train+z2_pred_train)/2
+                z_pred = (z1_pred+z2_pred)/2
+                auc_test.append(roc_auc_score(y_train_1[pheno].to_numpy()[test_index], z_pred))
+                auc_train.append(roc_auc_score(y_train_1[pheno].to_numpy()[train_index], z_pred_train))
+            phenotypes_scores[pheno] = [auc_train, auc_test]
+        else:
+            r2_test, r2_train = [], []
+            kf = KFold(n_splits=4)
+            for i, (train_index, test_index) in enumerate(kf.split(z_train_1)):
+                predictor_1 = SGDRegressor()
+                predictor_2 = SGDRegressor()
+
+                predictor_1.fit(z_train_1[train_index], y_train_1[pheno].to_numpy()[train_index])
+                z1_pred_train = predictor_1.predict(z_train_1[train_index])
+                z1_pred = predictor_1.predict(z_train_1[test_index])
+                predictor_2.fit(z_train_2[train_index], y_train_2[pheno].to_numpy()[train_index])
+                z2_pred_train = predictor_2.predict(z_train_2[train_index])
+                z2_pred = predictor_2.predict(z_train_2[test_index])
+                z_pred_train = (z1_pred_train+z2_pred_train)/2
+                z_pred = (z1_pred+z2_pred)/2
+                r2_test.append(r2_score(y_train_1[pheno].to_numpy()[test_index], z_pred))
+                r2_train.append(r2_score(y_train_1[pheno].to_numpy()[train_index], z_pred_train))
+            phenotypes_scores[pheno] = [r2_train, r2_test]
+    return phenotypes_scores
+
+
 def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None, n_pca=None): 
     phenotypes_scores = {}
     if mask is not None:
@@ -195,7 +244,8 @@ def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None,
             # kf.get_n_splits(z_train)
             # KFold(n_splits=2, random_state=None, shuffle=False)
             for i, (train_index, test_index) in enumerate(kf.split(z_train)):
-                predictor = RidgeClassifier(alpha=1)
+                # predictor = RidgeClassifier(alpha=1)
+                predictor = SGDClassifier()
                 X_train = z_train[train_index]
                 X_test = z_train[test_index]
                 Y_train = y_train[pheno].to_numpy()[train_index]
@@ -221,7 +271,9 @@ def phenotype_predictor(z_train, y_train, z_test, y_test, phenotypes, mask=None,
             # kf.get_n_splits(z_train)
             # KFold(n_splits=2, random_state=None, shuffle=False)
             for i, (train_index, test_index) in enumerate(kf.split(z_train)):
-                predictor = KernelRidge(alpha=0.5)
+                # predictor = KernelRidge(alpha=1)
+                # predictor = SGDRegressor()
+                predictor = make_pipeline(StandardScaler(with_mean=True), Ridge(solver='lsqr', max_iter=250000))
                 X_train = z_train[train_index]
                 X_test = z_train[test_index]
                 Y_train = y_train[pheno][train_index]
@@ -275,6 +327,7 @@ def cluster_test(df, n_clusters=5, original_modality="ecg"):
 
 def plot_pheno_prediction_performance(phenotypes, perf_results, labels, tag):
     for phenotype in phenotypes:
+        print(phenotype)
         x = np.arange(len(labels))  # the label locations
         width = 0.4  # the width of the bars
         multiplier = 0
@@ -338,3 +391,4 @@ def hungarian_match(y, y_hat, n_clusters):
 #         print("Pearson correlation of %s: %.5f"%(pheno, correlations.mean()))
 #         phenotypes_scores[pheno] = (r2_train, r2_test)
 #     return phenotypes_scores
+

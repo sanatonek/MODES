@@ -5,6 +5,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 sys.path.append('/home/sana/ml4h')
 sys.path.append('/home/sana')
 import tensorflow as tf
+# from tensorflow_addons.activations import tfa_activations
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -26,41 +27,80 @@ def main():
 
     data_path = "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21"
     # ecg_decoder_path = '/home/sana/ml4h/model_zoo/dropfuse/decoder_ecg_rest_median_raw_10.h5'
-    # ecg_encoder_path = '/home/sana/ml4h/model_zoo/dropfuse/encoder_ecg_rest_median_raw_10.h5'
-    # mri_encoder_path = '/home/sana/ml4h/model_zoo/dropfuse/encoder_lax_4ch_heart_center.h5'
+    ecg_df_encoder_path = '/home/sana/model_ckpts/dropfuse_encoder_ecg_rest_median_raw_10.h5'
+    mri_df_encoder_path = '/home/sana/model_ckpts/dropfuse_encoder_lax_4ch_heart_center.h5'
     # mri_decoder_path = '/home/sana/ml4h/model_zoo/dropfuse/decoder_lax_4ch_heart_center.h5'
     ecg_decoder_path = '/home/sana/model_ckpts/decoder_ecg_rest_median_raw_10.h5'
     ecg_encoder_path = '/home/sana/model_ckpts/encoder_ecg_rest_median_raw_10.h5'
     mri_encoder_path = '/home/sana/model_ckpts/encoder_lax_4ch_heart_center.h5'
     mri_decoder_path = '/home/sana/model_ckpts/decoder_lax_4ch_heart_center.h5'
     modality_names = ['input_ecg_rest_median_raw_10_continuous', 'input_lax_4ch_heart_center_continuous']
+    data_paths = {'input_lax_4ch_heart_center_continuous':data_path, 'input_ecg_rest_median_raw_10_continuous':data_path}
+    ckpt_nomask_path = "/home/sana/multimodal/ckpts_no_mask"
+    ckpt_path = "/home/sana/multimodal/ckpts"
+    plot_path = "/home/sana/multimodal/plots"
 
-    z_s_size = 356#256
-    z_m_size = 128#
+    z_s_size = 512#256
+    z_m_size = 256#
     
     
     # Load pretrain models
     ecg_decoder, ecg_encoder, mri_encoder, mri_decoder = load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path,
                                                                                 shared_s=z_s_size, modality_specific_s=z_m_size)
+    # custom_dict = {'mish': tfa_activations.mish}
+    ecg_df_encoder = tf.keras.models.load_model(ecg_df_encoder_path)#, custom_objects=custom_dict)
+    mri_df_encoder = tf.keras.models.load_model(mri_df_encoder_path)#, custom_objects=custom_dict)
     # print(list(pd.read_csv("/home/sana/tensors_all_union.csv").columns))
     
     # Load data
     sample_list = get_id_list(data_path, from_file=True, file_name="/home/sana/multimodal/data_list.pkl")
     print("Total number of samples: ", len(sample_list))
-    _, valid_loader, test_loader, list_ids, trainset = load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05, get_trainset=True)
+    _, valid_loader, test_loader, list_ids, trainset = load_data(sample_list, data_paths, n_train=5000, train_ratio=0.9, test_ratio=0.05, get_trainset=True)
 
     rep_disentangler = MultimodalRep(encoders={'input_ecg_rest_median_raw_10_continuous': keras.models.clone_model(ecg_encoder), 'input_lax_4ch_heart_center_continuous':keras.models.clone_model(mri_encoder)}, 
                           decoders={'input_ecg_rest_median_raw_10_continuous': ecg_decoder, 'input_lax_4ch_heart_center_continuous':mri_decoder}, 
                           train_ids=list_ids[0], shared_size=z_s_size, modality_names=modality_names, 
                           z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
                           modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                          mask=False
+                          mask=True, ckpt_path=ckpt_path
                           )  
-    rep_disentangler.load_from_checkpoint("/home/sana/multimodal/ckpts")
+    rep_disentangler.load_from_checkpoint()
     rep_disentangler._set_trainable_mask(trainable=False)
+
+
+    train_tracker = np.load(os.path.join(ckpt_path,'train_tracker.npz'))
+    print(len(train_tracker['shared_mask']), train_tracker['shared_mask'][0].shape)
+    print(len(train_tracker['m1_mask']), train_tracker['m1_mask'][0].shape)
+    _, axs = plt.subplots(len(modality_names)+1, 1)
+    sns.heatmap(np.stack(train_tracker['shared_mask']), ax=axs[2])
+    sns.heatmap(train_tracker['m1_mask'], ax=axs[0])
+    sns.heatmap(train_tracker['m2_mask'], ax=axs[1])
+    axs[2].set_ylabel('Shared mask')
+    axs[0].set_ylabel('ECG')
+    axs[1].set_ylabel('MRI')
+    plt.savefig(os.path.join(plot_path,"masks.pdf"))
+
+    _, axs = plt.subplots(1,3, figsize=(12, 4))
+    axs[0].plot(train_tracker['modality_loss'])
+    axs[0].set_title("modality-specific training loss", fontsize=14)
+    axs[1].plot(train_tracker['shared_loss'])
+    axs[1].set_title("shared training loss", fontsize=14)
+    axs[2].plot(train_tracker['encoder_loss'])
+    axs[2].set_title("Encoder training loss", fontsize=14)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_path,"train_curves.pdf"))
+
+
     # sys.exit("Error message")
-    # Plot reconstructed samples
+
     test_batch, test_ids = next(iter(test_loader))
+    print('ECG')
+    print(tf.reduce_mean(test_batch['input_ecg_rest_median_raw_10_continuous']), tf.math.reduce_std(test_batch['input_ecg_rest_median_raw_10_continuous']))
+    print('Heart')
+    print(tf.reduce_mean(test_batch['input_lax_4ch_heart_center_continuous']), tf.math.reduce_std(test_batch['input_lax_4ch_heart_center_continuous']))
+    # sys.exit("Error message")
+
+
     valid_batch, valid_ids = next(iter(valid_loader))
     test_ids = test_ids.tolist()
     valid_ids = valid_ids.tolist()
@@ -72,23 +112,27 @@ def main():
                        'input_lax_4ch_heart_center_continuous':mri_encoder(tf.convert_to_tensor(test_batch['input_lax_4ch_heart_center_continuous']))}
     baseline_z_valid = {'input_ecg_rest_median_raw_10_continuous':ecg_encoder(tf.convert_to_tensor(valid_batch['input_ecg_rest_median_raw_10_continuous'])), 
                        'input_lax_4ch_heart_center_continuous':mri_encoder(tf.convert_to_tensor(valid_batch['input_lax_4ch_heart_center_continuous']))}
-    i = 0
-    for data_batch, test_id_batch in test_loader:
-        z_s_all, z_m_all = rep_disentangler.encode(data_batch)
-        z_merged_test = tf.concat([z_merged_test, rep_disentangler.merge_representations(data_batch)], 0)
-        for key in z_s_all.keys():
-            z_s_test[key] = tf.concat([z_s_test[key], z_s_all[key]], 0)
-            z_m_test[key] = tf.concat([z_m_test[key], z_m_all[key]], 0)
-            if 'lax' in key:
-                baseline_z_test[key] = tf.concat([baseline_z_test[key], mri_encoder(tf.convert_to_tensor(data_batch[key]))], 0)
-            if 'ecg' in key:
-                baseline_z_test[key] = tf.concat([baseline_z_test[key], ecg_encoder(tf.convert_to_tensor(data_batch[key]))], 0)
-            # test_batch[key] = tf.concat([test_batch[key], data_batch[key]], 0)
-        test_ids.extend(test_id_batch.tolist())
-        i += 1
-        if i>=1:
-            break
-    print('**********', z_merged_test.shape)
+    dropfuse_z_valid = {'input_ecg_rest_median_raw_10_continuous':ecg_df_encoder((tf.convert_to_tensor(valid_batch['input_ecg_rest_median_raw_10_continuous']))), 
+                       'input_lax_4ch_heart_center_continuous':mri_df_encoder((tf.convert_to_tensor(valid_batch['input_lax_4ch_heart_center_continuous'])))}
+    dropfuse_z_test = {'input_ecg_rest_median_raw_10_continuous':ecg_df_encoder((tf.convert_to_tensor(test_batch['input_ecg_rest_median_raw_10_continuous']))), 
+                       'input_lax_4ch_heart_center_continuous':mri_df_encoder((tf.convert_to_tensor(test_batch['input_lax_4ch_heart_center_continuous'])))}
+    # i = 0
+    # for data_batch, test_id_batch in test_loader:
+    #     z_s_all, z_m_all = rep_disentangler.encode(data_batch)
+    #     z_merged_test = tf.concat([z_merged_test, rep_disentangler.merge_representations(data_batch)], 0)
+    #     for key in z_s_all.keys():
+    #         z_s_test[key] = tf.concat([z_s_test[key], z_s_all[key]], 0)
+    #         z_m_test[key] = tf.concat([z_m_test[key], z_m_all[key]], 0)
+    #         if 'lax' in key:
+    #             baseline_z_test[key] = tf.concat([baseline_z_test[key], mri_encoder(tf.convert_to_tensor(data_batch[key]))], 0)
+    #         if 'ecg' in key:
+    #             baseline_z_test[key] = tf.concat([baseline_z_test[key], ecg_encoder(tf.convert_to_tensor(data_batch[key]))], 0)
+    #         # test_batch[key] = tf.concat([test_batch[key], data_batch[key]], 0)
+    #     test_ids.extend(test_id_batch.tolist())
+    #     i += 1
+    #     if i>=1:
+    #         break
+    print('********** Test df:', z_merged_test.shape)
 
     i = 0
     for data_batch, valid_id_batch in valid_loader:
@@ -99,14 +143,16 @@ def main():
             z_m_valid[key] = tf.concat([z_m_valid[key], z_m_all[key]], 0)
             if 'lax' in key:
                 baseline_z_valid[key] = tf.concat([baseline_z_valid[key], mri_encoder(tf.convert_to_tensor(data_batch[key]))], 0)
+                dropfuse_z_valid[key] = tf.concat([dropfuse_z_valid[key], mri_df_encoder((tf.convert_to_tensor(data_batch[key])))], 0)
             if 'ecg' in key:
                 baseline_z_valid[key] = tf.concat([baseline_z_valid[key], ecg_encoder(tf.convert_to_tensor(data_batch[key]))], 0)
+                dropfuse_z_valid[key] = tf.concat([dropfuse_z_valid[key], ecg_df_encoder((tf.convert_to_tensor(data_batch[key])))], 0)
             # valid_batch[key] = tf.concat([valid_batch[key], data_batch[key]], 0)
         valid_ids.extend(valid_id_batch.tolist()) 
         # i += 1
         # if i>=50:
         #     break 
-    print('**********', z_merged_valid.shape)
+    print('********** Valid df: ', z_merged_valid.shape)
 
     
     # plot some generated samples
@@ -128,29 +174,29 @@ def main():
         # low_ecg_pcas.append([trainset[ind]['input_ecg_rest_median_raw_10_continuous'] for ind in min_pc_ecg_inds])
         
     plot_sample(tf.concat(generated_samples,0), num_cols=len(generated_samples[0]), num_rows=3, 
-                save_path="/home/sana/multimodal/plots/generated_distribution_mri.pdf")
+                save_path=os.path.join(plot_path,"generated_distribution_mri.pdf"))
     plot_sample(tf.concat(generated_ecgs,0), num_cols=len(generated_samples[0]), num_rows=3, 
-                save_path="/home/sana/multimodal/plots/generated_distribution_ecg.pdf")
+                save_path=os.path.join(plot_path,"generated_distribution_ecg.pdf"))
     plot_sample(mri_pcas, num_cols=len(generated_samples[0]), num_rows=3, 
-                save_path="/home/sana/multimodal/plots/pca_mri.pdf")
+                save_path=os.path.join(plot_path,"pca_mri.pdf"))
     plot_sample(ecg_pcas, num_cols=len(generated_samples[0]), num_rows=3, 
-                save_path="/home/sana/multimodal/plots/pca_ecg.pdf")
+                save_path=os.path.join(plot_path,"pca_ecg.pdf"))
 
     
     generated_mod, probs, ref_sample = rep_disentangler.generate_sample(test_batch, rnd_id, variation=False,
                                     ref_modality='input_ecg_rest_median_raw_10_continuous', 
                                     target_modality='input_lax_4ch_heart_center_continuous', n_samples=8)
     plot_sample([ref_sample]+[g for g in generated_mod], num_cols=8+1, num_rows=1, 
-                save_path="/home/sana/multimodal/plots/generated_similar_mri.pdf")
+                save_path=os.path.join("generated_similar_mri.pdf"))
     plt.bar(np.arange(8), probs)
     plt.title("Probability of generated samples")
-    plt.savefig("/home/sana/multimodal/plots/generated_similar_mri_probs.pdf")
+    plt.savefig(os.path.join(plot_path,"generated_similar_mri_probs.pdf"))
     
     generated_mod, probs, ref_sample = rep_disentangler.generate_sample(test_batch, rnd_id, variation=False,
                                     ref_modality='input_lax_4ch_heart_center_continuous', 
                                     target_modality='input_ecg_rest_median_raw_10_continuous', n_samples=8)
     plot_sample([ref_sample]+[g for g in generated_mod], num_cols=8+1, num_rows=1, 
-                save_path="/home/sana/multimodal/plots/generated_similar_ecg.pdf")
+                save_path=os.path.join(plot_path,"generated_similar_ecg.pdf"))
 
 
 
@@ -161,11 +207,11 @@ def main():
     reconstructed_mixed_samples = rep_disentangler.decode(z_s_mixed, z_m_test)
     for m_name in modality_names:
         plot_sample(test_batch[m_name], num_cols=4, num_rows=1,
-                    save_path="/home/sana/multimodal/plots/original_%s.pdf"%m_name)
+                    save_path=os.path.join(plot_path,"original_%s.pdf"%m_name))
         plot_sample(reconstructed_samples[m_name], num_cols=4, num_rows=1,
-                    save_path="/home/sana/multimodal/plots/reconstructed_%s.pdf"%m_name)
+                    save_path=os.path.join(plot_path,"reconstructed_%s.pdf"%m_name))
         plot_sample(reconstructed_mixed_samples[m_name], num_cols=4, num_rows=1,
-                    save_path="/home/sana/multimodal/plots/reconstructed_mixed_%s.pdf"%m_name)
+                    save_path=os.path.join(plot_path,"reconstructed_mixed_%s.pdf"%m_name))
 
         # Plot top pca samples
         # pos_samples_s, neg_samples_s, pos_samples_m, neg_samples_m = pca_analysis(test_batch, rep_disentangler, modality_name=m_name, percentile=0.1)
@@ -181,17 +227,17 @@ def main():
         # plot correlations
         corr_mat = np.corrcoef(np.concatenate([z_m_test[m_name], z_s_test[m_name]], axis=-1).T)
         plt.matshow(corr_mat)
-        plt.savefig("/home/sana/multimodal/plots/%s_correlations.pdf"%m_name)
+        plt.savefig(os.path.join(plot_path,"%s_correlations.pdf"%m_name))
         plt.close()
         
     ## Modality specific phenotypes
-    ecg_pheno = ['PQInterval', 'QTInterval','QTCInterval','QRSDuration','RRInterval']
+    ecg_pheno = ['PQInterval', 'QTInterval','QRSDuration','RRInterval']
     # mri_pheno = ['LA_2Ch_vol_max', 'LA_2Ch_vol_min', 'LA_4Ch_vol_max', 'LA_4Ch_vol_min', 'LVEDV', 'LVEF',
     #              'LVESV', 'LVM', 'LVSV', 'RVEDV', 'RVEF', 'RVESV', 'RVSV']
-    mri_pheno = ['LA_2Ch_vol_max', 'LA_2Ch_vol_min', 'LVEDV',
-                 'LVESV', 'LVM', 'LVSV', 'RVEDV', 'RVESV', 'RVSV']
+    mri_pheno = ['LVEDV', 'LVESV', 'LVM', 'LVSV', 'RVEDV', 'RVESV', 'RVSV']
     shared_pheno = ['21003_Age-when-attended-assessment-centre_2_0', '21001_Body-mass-index-BMI_2_0']
-    diagnostics = ['atrial_fibrillation_or_flutter', 'Sex_Male_0_0']
+    diagnostics = ['atrial_fibrillation_or_flutter',  'diabetes_type_2', 'hypercholesterolemia', 'hypertension', 
+                    'valvular_disease_unspecified', 'mitral_regurgitation', 'Normal_sinus_rhythm', 'Sinus_bradycardia']#'Sex_Male_0_0',
     phenotype_df = pd.read_csv("/home/sana/tensors_all_union.csv")[ecg_pheno+mri_pheno+shared_pheno+diagnostics+['fpath']]
     phenotype_df['fpath'] = phenotype_df['fpath'].astype(int)
     phenotype_df.dropna(inplace=True)
@@ -203,6 +249,8 @@ def main():
                            'z_s': z_merged_test[:, -zs_size:].numpy().tolist(),
                            'z_baseline_ecg': baseline_z_test['input_ecg_rest_median_raw_10_continuous'].numpy().tolist(),
                            'z_baseline_mri': baseline_z_test['input_lax_4ch_heart_center_continuous'].numpy().tolist(),
+                           'z_dropfuse_ecg': dropfuse_z_test['input_ecg_rest_median_raw_10_continuous'].numpy().tolist(),
+                           'z_dropfuse_mri': dropfuse_z_test['input_lax_4ch_heart_center_continuous'].numpy().tolist(),
                            'z_merged': z_merged_test.numpy().tolist()}) 
     rep_df_valid = pd.DataFrame({'fpath': valid_ids, 'zs_ecg':z_s_valid['input_ecg_rest_median_raw_10_continuous'].numpy().tolist(),
                            'zs_mri':z_s_valid['input_lax_4ch_heart_center_continuous'].numpy().tolist() ,
@@ -211,6 +259,8 @@ def main():
                            'z_s': z_merged_valid[:, -zs_size:].numpy().tolist(),
                             'z_baseline_ecg': baseline_z_valid['input_ecg_rest_median_raw_10_continuous'].numpy().tolist(),
                             'z_baseline_mri': baseline_z_valid['input_lax_4ch_heart_center_continuous'].numpy().tolist(),
+                            'z_dropfuse_ecg': dropfuse_z_valid['input_ecg_rest_median_raw_10_continuous'].numpy().tolist(),
+                            'z_dropfuse_mri': dropfuse_z_valid['input_lax_4ch_heart_center_continuous'].numpy().tolist(),
                             'z_merged': z_merged_valid.numpy().tolist()})
     valid_pheno_df = pd.merge(phenotype_df, rep_df_valid, on='fpath')
     pheno_mean = valid_pheno_df[ecg_pheno+mri_pheno+shared_pheno].mean()
@@ -219,12 +269,12 @@ def main():
     test_pheno_df = pd.merge(phenotype_df, rep_df, on='fpath')
     test_pheno_df[ecg_pheno+mri_pheno+shared_pheno] = (test_pheno_df[ecg_pheno+mri_pheno+shared_pheno]-pheno_mean)/pheno_std
 
-    ecg_ecg_score, ecg_mri_score = cluster_test(rep_df, n_clusters=5, original_modality="ecg")
-    mri_mri_score, mri_ecg_score = cluster_test(rep_df, n_clusters=5, original_modality="mri")
-    print("ECG representation (m+s) matching with baseline ECG: ", ecg_ecg_score)
-    print("modality-specific MRI representation matching with baseline ECG: ", ecg_mri_score)
-    print("MRI representation (m+s) matching with baseline MRI: ", mri_mri_score)
-    print("modality-specific ECG representation matching with baseline MRI: ", mri_ecg_score)
+    # ecg_ecg_score, ecg_mri_score = cluster_test(rep_df, n_clusters=5, original_modality="ecg")
+    # mri_mri_score, mri_ecg_score = cluster_test(rep_df, n_clusters=5, original_modality="mri")
+    # print("ECG representation (m+s) matching with baseline ECG: ", ecg_ecg_score)
+    # print("modality-specific MRI representation matching with baseline ECG: ", ecg_mri_score)
+    # print("MRI representation (m+s) matching with baseline MRI: ", mri_mri_score)
+    # print("modality-specific ECG representation matching with baseline MRI: ", mri_ecg_score)
 
     # TODO: put this into a function
     print("\nEvaluating shared ECG")
@@ -272,6 +322,18 @@ def main():
     b2 = phenotype_predictor(np.vstack(valid_pheno_df['z_baseline_mri']), valid_pheno_df, 
                              np.vstack(test_pheno_df['z_baseline_mri']), test_pheno_df, 
                              phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics)
+
+    late_fusion = phenotype_predictor_lf(np.vstack(valid_pheno_df['z_baseline_ecg']), valid_pheno_df, 
+                                         np.vstack(valid_pheno_df['z_baseline_mri']), valid_pheno_df, 
+                                        phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics)
+    print("\nEvaluating dropfuse ECG")
+    df1 = phenotype_predictor(np.vstack(valid_pheno_df['z_dropfuse_ecg']), valid_pheno_df, 
+                             np.vstack(test_pheno_df['z_dropfuse_ecg']), test_pheno_df, 
+                             phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics)
+    print("\nEvaluating dropfuse MRI")
+    df2 = phenotype_predictor(np.vstack(valid_pheno_df['z_dropfuse_mri']), valid_pheno_df, 
+                             np.vstack(test_pheno_df['z_dropfuse_mri']), test_pheno_df, 
+                             phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics)
     print("\nEvaluating merged representations")
     m1 = phenotype_predictor(np.vstack(valid_pheno_df['z_merged']), valid_pheno_df, 
                              np.vstack(test_pheno_df['z_merged']), test_pheno_df, 
@@ -290,26 +352,6 @@ def main():
                              test_pheno_df, n_pca=rep_disentangler.merged_size,
                              phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics) 
 
-    # Generalizability test
-    # gen_test_ours, gen_test_pca, gen_test_concat = [], [], []
-    # ratios = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
-    # for ratio in ratios:
-    #     chopped_df = valid_pheno_df[:int(ratio*len(valid_pheno_df))]
-    #     acc = phenotype_predictor(np.vstack(chopped_df['z_merged']), chopped_df, 
-    #                             np.vstack(test_pheno_df['z_merged']), test_pheno_df, 
-    #                             phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics)
-    #     acc_pca = phenotype_predictor(np.concatenate([np.vstack(chopped_df['z_baseline_mri']),np.vstack(chopped_df['z_baseline_ecg'])],-1),
-    #                                 chopped_df, 
-    #                                 np.concatenate([np.vstack(test_pheno_df['z_baseline_mri']),np.vstack(test_pheno_df['z_baseline_ecg'])],-1), 
-    #                                 test_pheno_df, n_pca=rep_disentangler.merged_size,
-    #                                 phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics) 
-    #     acc_concat = phenotype_predictor(np.concatenate([np.vstack(chopped_df['z_baseline_mri']),np.vstack(chopped_df['z_baseline_ecg'])],-1),
-    #                                 chopped_df, 
-    #                                 np.concatenate([np.vstack(test_pheno_df['z_baseline_mri']),np.vstack(test_pheno_df['z_baseline_ecg'])],-1), 
-    #                                 test_pheno_df, phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics)
-    #     gen_test_ours.append(acc)
-    #     gen_test_pca.append(acc_pca)
-    #     gen_test_concat.append(acc_concat)
     
     plot_pheno_prediction_performance(phenotypes=ecg_pheno+mri_pheno+shared_pheno+diagnostics, 
                                       perf_results=[b1, b2, m1, m2], 
@@ -322,18 +364,22 @@ def main():
 
     labels = ecg_pheno+mri_pheno
     x = np.arange(len(labels))
-    width = 0.2  # the width of the bars
+    width = 0.15  # the width of the bars
     multiplier = 0
-    fig, ax = plt.subplots(layout='constrained', figsize=(20, 4))
+    fig, ax = plt.subplots(layout='constrained', figsize=(len(x)*2, 4))
     scores = {'Ours':[np.mean(m1[pheno][1]) for pheno in labels],
-            'Concatenated':[np.mean(m2[pheno][1]) for pheno in labels],
-            # 'PCA':[np.mean(m2_pca[pheno][1]) for pheno in labels],
+            'Early fusion':[np.mean(m2[pheno][1]) for pheno in labels],
+            'Late fusion':[np.mean(late_fusion[pheno][1]) for pheno in labels],
+            # 'DropFuse ECG':[np.mean(df1[pheno][1]) for pheno in labels],
+            # 'DropFuse MRI':[np.mean(df2[pheno][1]) for pheno in labels],
             'Unimodal ECG':[np.mean(b1[pheno][1]) for pheno in labels],
             'Unimodal MRI':[np.mean(b2[pheno][1]) for pheno in labels],
             }
     scores_error = {'Ours':[np.std(m1[pheno][1]) for pheno in labels],
-                    'Concatenated':[np.std(m2[pheno][1]) for pheno in labels],
-                    # 'PCA':[np.std(m2_pca[pheno][1]) for pheno in labels],
+                    'Early fusion':[np.std(m2[pheno][1]) for pheno in labels],
+                    'Late fusion':[np.std(late_fusion[pheno][1]) for pheno in labels],
+                    # 'DropFuse ECG':[np.std(df1[pheno][1]) for pheno in labels],
+                    # 'DropFuse MRI':[np.std(df2[pheno][1]) for pheno in labels],
                     'Unimodal ECG':[np.std(b1[pheno][1]) for pheno in labels],
                     'Unimodal MRI':[np.std(b2[pheno][1]) for pheno in labels],
                     }
@@ -346,27 +392,58 @@ def main():
         multiplier += 1
     # Add some text for labels, title and custom x-axis tick labels, etc.
     ax.set_ylabel('R-squared')
-    ax.set_title('Comparison of the predictive performance of representations')
-    ax.set_xticks(x + width, labels, rotation=70)
+    ax.set_title('Comparison of the predictive performance of representations', fontsize=14)
+    ax.set_xticks(x + width, labels)#, rotation=40)
     ax.legend(loc='upper left', ncols=4)
-    plt.savefig("/home/sana/multimodal/plots/phenotype_prediction.pdf")
+    plt.savefig(os.path.join(plot_path,"phenotype_prediction.pdf"))
+    fig.clf()
+
+    labels = diagnostics
+    x = np.arange(len(labels))
+    width = 0.15  # the width of the bars
+    multiplier = 0
+    fig, ax = plt.subplots(layout='constrained', figsize=(len(x)*1.5, 4))
+    scores = {'Multimodal (Ours)':[np.mean(m1[pheno][1]) for pheno in labels],
+            'Multimodal (Early fusion)':[np.mean(m2[pheno][1]) for pheno in labels],
+            'Multimodal (Late fusion)':[np.mean(late_fusion[pheno][1]) for pheno in labels],
+            'Unimodal ECG':[np.mean(b1[pheno][1]) for pheno in labels],
+            'Unimodal MRI':[np.mean(b2[pheno][1]) for pheno in labels],
+            }
+    scores_error = {'Multimodal (Ours)':[np.std(m1[pheno][1]) for pheno in labels],
+                    'Multimodal (Early fusion)':[np.std(m2[pheno][1]) for pheno in labels],
+                    'Multimodal (Late fusion)':[np.std(late_fusion[pheno][1]) for pheno in labels],
+                    'Unimodal ECG':[np.std(b1[pheno][1]) for pheno in labels],
+                    'Unimodal MRI':[np.std(b2[pheno][1]) for pheno in labels],
+                    }
+    for attribute, measurement in scores.items():
+        offset = width * multiplier
+        rounded_list = [round(m*100)/100 for m in measurement]
+        rects = ax.bar(x + offset, rounded_list, width, label=attribute)
+        ax.errorbar(x + offset, rounded_list, yerr=scores_error[attribute], fmt="o", color="black")
+        # ax.bar_label(rects, padding=3)
+        multiplier += 1
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel('R-squared')
+    ax.set_title('Comparison of the predictive performance of representations for diagnostic labels', fontsize=14)
+    ax.set_xticks(x + width, labels, rotation=40)
+    ax.legend(loc='upper left', ncols=4)
+    plt.savefig(os.path.join(plot_path,"diagnosis_prediction.pdf"))
     fig.clf()
 
     # Missing modality experiment
-    labels = ecg_pheno+mri_pheno
-    x = np.arange(len(labels))
+    # labels = ecg_pheno+mri_pheno
+    # x = np.arange(len(labels))
     width = 0.2  # the width of the bars
     multiplier = 0
-    fig, ax = plt.subplots(layout='constrained', figsize=(20, 4))
-    scores = {'Our ECG':[np.mean(f1[pheno][1]) for pheno in labels],
-            'Unimodal ECG':[np.mean(b1[pheno][1]) for pheno in labels],
-            'Our MRI':[np.mean(f2[pheno][1]) for pheno in labels],
-            'Unimodal MRI':[np.mean(b2[pheno][1]) for pheno in labels],
+    x = np.arange(len(ecg_pheno))
+    fig, ax = plt.subplots(layout='constrained', figsize=(len(x)*2, 4))
+    scores = {'Our MRI':[np.mean(f2[pheno][1]) for pheno in ecg_pheno],
+            'Unimodal MRI':[np.mean(b2[pheno][1]) for pheno in ecg_pheno],
+            'DropFuse MRI':[np.mean(df2[pheno][1]) for pheno in ecg_pheno],
             }
-    scores_error = {'Our ECG':[np.std(f1[pheno][1]) for pheno in labels],
-                    'Unimodal ECG':[np.std(b1[pheno][1]) for pheno in labels],
-                    'Our MRI':[np.std(f2[pheno][1]) for pheno in labels],
-                    'Unimodal MRI':[np.std(b2[pheno][1]) for pheno in labels],
+    scores_error = {'Our MRI':[np.std(f2[pheno][1]) for pheno in ecg_pheno],
+                    'Unimodal MRI':[np.std(b2[pheno][1]) for pheno in ecg_pheno],
+                    'DropFuse MRI':[np.std(df2[pheno][1]) for pheno in ecg_pheno],
                     }
     for attribute, measurement in scores.items():
         offset = width * multiplier
@@ -377,11 +454,39 @@ def main():
         multiplier += 1
     # Add some text for labels, title and custom x-axis tick labels, etc.
     ax.set_ylabel('R-squared')
-    ax.set_title('Comparison of the predictive performance of representations')
-    ax.set_xticks(x + width, labels, rotation=70)
+    ax.set_title('Prediction of ECG derived phenotypes from MRI', fontsize=14)
+    ax.set_xticks(x + width, ecg_pheno)#, rotation=40)
     ax.legend(loc='upper left', ncols=4)
-    plt.savefig("/home/sana/multimodal/plots/missing_modality_prediction.pdf")
+    plt.savefig(os.path.join(plot_path,"missing_mri2ecg.pdf"))
     fig.clf()
+
+    multiplier = 0
+    x = np.arange(len(mri_pheno))
+    fig, ax = plt.subplots(layout='constrained', figsize=(len(x)*2, 4))
+    scores = {'Our ECG':[np.mean(f1[pheno][1]) for pheno in mri_pheno],
+            'Unimodal ECG':[np.mean(b1[pheno][1]) for pheno in mri_pheno],
+            'DropFuse ECG':[np.mean(df1[pheno][1]) for pheno in mri_pheno],\
+            }
+    scores_error = {'Our ECG':[np.std(f1[pheno][1]) for pheno in mri_pheno],
+                    'Unimodal ECG':[np.std(b1[pheno][1]) for pheno in mri_pheno],
+                    'DropFuse ECG':[np.std(df1[pheno][1]) for pheno in mri_pheno],
+                    }
+    for attribute, measurement in scores.items():
+        offset = width * multiplier
+        rounded_list = [round(m*100)/100 for m in measurement]
+        rects = ax.bar(x + offset, rounded_list, width, label=attribute)
+        ax.errorbar(x + offset, rounded_list, yerr=scores_error[attribute], fmt="o", color="black")
+        # ax.bar_label(rects, padding=3)
+        multiplier += 1
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel('R-squared')
+    ax.set_title('Prediction of MRI derived phenotypes from ECG', fontsize=14)
+    ax.set_xticks(x + width, mri_pheno)#, rotation=40)
+    ax.legend(loc='upper left', ncols=4)
+    plt.savefig(os.path.join(plot_path,"missing_ecg2mri.pdf"))
+    fig.clf()
+
+
 
     # Different componenet analysis
     labels = ecg_pheno+mri_pheno
@@ -392,10 +497,14 @@ def main():
     scores = {'ECG-specific':[np.mean(s3[pheno][1]) for pheno in labels],
               'MRI-specific':[np.mean(s4[pheno][1]) for pheno in labels],
               'shared':[np.mean(s5[pheno][1]) for pheno in labels],
+              'Unimodal ECG':[np.mean(b1[pheno][1]) for pheno in labels],
+              'Unimodal MRI':[np.mean(b2[pheno][1]) for pheno in labels],
             }
     scores_error = {'ECG-specific':[np.std(s3[pheno][1]) for pheno in labels],
               'MRI-specific':[np.std(s4[pheno][1]) for pheno in labels],
               'shared':[np.std(s5[pheno][1]) for pheno in labels],
+              'Unimodal ECG':[np.std(b1[pheno][1]) for pheno in labels],
+              'Unimodal MRI':[np.std(b2[pheno][1]) for pheno in labels],
             }
     for attribute, measurement in scores.items():
         offset = width * multiplier
@@ -406,10 +515,10 @@ def main():
         multiplier += 1
     # Add some text for labels, title and custom x-axis tick labels, etc.
     ax.set_ylabel('R-squared')
-    ax.set_title('Comparison of the predictive performance of representations')
-    ax.set_xticks(x + width, labels, rotation=70)
+    ax.set_title('Comparison of the predictive performance of representations', fontsize=14)
+    ax.set_xticks(x + width, labels)#, rotation=40)
     ax.legend(loc='upper left', ncols=4)
-    plt.savefig("/home/sana/multimodal/plots/component_prediction.pdf")
+    plt.savefig(os.path.join(plot_path,"component_prediction.pdf"))
     fig.clf()
 
     for phenotype in ecg_pheno+mri_pheno+shared_pheno+diagnostics:
@@ -436,43 +545,6 @@ def main():
     #     fig.clf()
 
 
-        # Missing modality experiment
-        # labels = ['Our ECG rep.', 'Baseline ECG rep.', 'Our MRI rep.', 'Baseline MRI rep.']
-        # x = np.arange(len(labels))  # the label locations
-        # width = 0.3  # the width of the bars
-        # multiplier = 0
-        # fig, ax = plt.subplots(layout='constrained', figsize=(8, 4))
-        # scores = {'train':(f1[phenotype][0],b1[phenotype][0],f2[phenotype][0],b2[phenotype][0]),
-        #  'test':(f1[phenotype][1],b1[phenotype][1],f2[phenotype][1],b2[phenotype][1])}
-        # for attribute, measurement in scores.items():
-        #     offset = width * multiplier
-        #     rounded_list = [round(np.mean(m)*100)/100 for m in measurement]
-        #     rects = ax.bar(x + offset, rounded_list, width, label=attribute)
-        #     ax.bar_label(rects, padding=3)
-        #     multiplier += 1
-        # # Add some text for labels, title and custom x-axis tick labels, etc.
-        # ax.set_ylabel('R^2')
-        # ax.set_title(phenotype)
-        # ax.set_xticks(x + width, labels, rotation=70)
-        # # ax.xticks(rotation=70)
-        # ax.legend(loc='upper left', ncols=4)
-        # ax.set_title(phenotype)
-        # plt.savefig("/home/sana/multimodal/plots/missingness_%s.pdf"%phenotype)
-        # fig.clf()
-
-        
-        # fig = plt.figure(figsize=(10, 5))
-        # plt.plot(ratios, [g[phenotype][0] for g in gen_test_ours], label='Train merged')
-        # plt.plot(ratios, [g[phenotype][1] for g in gen_test_ours], label='Test merged')
-        # plt.plot(ratios, [g[phenotype][0] for g in gen_test_pca], label='Train pca')
-        # plt.plot(ratios, [g[phenotype][1] for g in gen_test_pca], label='Test pca')
-        # plt.plot(ratios, [g[phenotype][0] for g in gen_test_concat], label='Train concat.')
-        # plt.plot(ratios, [g[phenotype][1] for g in gen_test_concat], label='Test concat.')
-        # plt.legend()
-        # plt.ylim([-0.5,1])
-        # plt.savefig("/home/sana/multimodal/plots/generalizability_%s.pdf"%phenotype)
-        # fig.clf()
-
         fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(15, 5))
         zm_mri = np.vstack(valid_pheno_df['zm_mri'])
         mask_mri = rep_disentangler.modality_masks['input_lax_4ch_heart_center_continuous'].binary_mask
@@ -482,7 +554,7 @@ def main():
             zm_mri = PCA(n_components=2).fit_transform(zm_mri)
             axs[0].scatter(zm_mri[:,0], zm_mri[:,1], c=valid_pheno_df[phenotype].to_list(),
                             cmap=sns.cubehelix_palette(as_cmap=True))
-            axs[0].set_title("Modality-specific (MRI)")
+            axs[0].set_title("Modality-specific (MRI)", fontsize=14)
         zs = np.vstack(valid_pheno_df['z_s'])
         # mask_shared = rep_disentangler.shared_mask.binary_mask
         # zs = np.take(zs, np.argwhere(mask_shared==1)[:,0], axis=1)
@@ -490,7 +562,7 @@ def main():
         zs = PCA(n_components=2).fit_transform(zs)
         axs[1].scatter(zs[:,0], zs[:,1], c=valid_pheno_df[phenotype].to_list(),
                          cmap=sns.cubehelix_palette(as_cmap=True))
-        axs[1].set_title("Shared")
+        axs[1].set_title("Shared", fontsize=14)
         zm_ecg = np.vstack(valid_pheno_df['zm_ecg'])
         mask_ecg = rep_disentangler.modality_masks['input_ecg_rest_median_raw_10_continuous'].binary_mask
         zm_ecg = np.take(zm_ecg, np.argwhere(mask_ecg==1)[:,0], axis=1)
@@ -499,7 +571,7 @@ def main():
             zm_ecg = PCA(n_components=2).fit_transform(zm_ecg)
             axs[2].scatter(zm_ecg[:,0], zm_ecg[:,1], c=valid_pheno_df[phenotype].to_list(),
                             cmap=sns.cubehelix_palette(as_cmap=True))
-            axs[2].set_title("Modality-specific (ECG)")
+            axs[2].set_title("Modality-specific (ECG)", fontsize=14)
         # zs_ecg = np.vstack(test_pheno_df['zs_ecg'])
         # zs_ecg = np.take(zs_ecg, np.argwhere(mask_shared==1)[:,0], axis=1)
         # # zs_ecg = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=3).fit_transform(zs_ecg)
@@ -507,7 +579,7 @@ def main():
         # axs[1,1].scatter(zs_ecg[:,0], zs_ecg[:,1], c=test_pheno_df[phenotype].to_list(),
         #                  cmap=sns.cubehelix_palette(as_cmap=True))
         # axs[1,1].set_title("Shared (ECG)")
-        plt.savefig("/home/sana/multimodal/plots/scatter_%s.pdf"%phenotype)
+        plt.savefig(os.path.join(plot_path,"scatter_%s.pdf"%phenotype))
         fig.clf()
 
     sys.stdout = orig_stdout

@@ -24,26 +24,22 @@ def main():
     sys.stdout = out_file
 
     data_path = "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21"
-    # abaumann-ukbb-brain-mri-tensors-65k
-    # ecg_decoder_path = '/home/sana/ml4h/model_zoo/dropfuse/decoder_ecg_rest_median_raw_10.h5'
-    # ecg_encoder_path = '/home/sana/ml4h/model_zoo/dropfuse/encoder_ecg_rest_median_raw_10.h5'
-    # mri_encoder_path = '/home/sana/ml4h/model_zoo/dropfuse/encoder_lax_4ch_heart_center.h5'
-    # mri_decoder_path = '/home/sana/ml4h/model_zoo/dropfuse/decoder_lax_4ch_heart_center.h5'
     ecg_decoder_path = '/home/sana/model_ckpts/decoder_ecg_rest_median_raw_10.h5'
     ecg_encoder_path = '/home/sana/model_ckpts/encoder_ecg_rest_median_raw_10.h5'
     mri_encoder_path = '/home/sana/model_ckpts/encoder_lax_4ch_heart_center.h5'
     mri_decoder_path = '/home/sana/model_ckpts/decoder_lax_4ch_heart_center.h5'
-    # brain_mri_encoder_path = '/home/sana/model_ckpts/encoder_axial_128_160.h5'
-    # brain_mri_decoder_path = '/home/sana/model_ckpts/decoder_axial_128_160.h5'
     modality_names = ['input_ecg_rest_median_raw_10_continuous', 'input_lax_4ch_heart_center_continuous']
+    data_paths = {'input_lax_4ch_heart_center_continuous':data_path, 'input_ecg_rest_median_raw_10_continuous':data_path}
+    ckpt_path = "/home/sana/multimodal/ckpts"
+    plot_path = "/home/sana/multimodal/plots"
 
-    if not os.path.exists("/home/sana/multimodal/ckpts"):
-        os.mkdir("/home/sana/multimodal/ckpts")
-    if not os.path.exists("/home/sana/multimodal/plots"):
-        os.mkdir("/home/sana/multimodal/plots")
+    if not os.path.exists(ckpt_path):
+        os.mkdir(ckpt_path)
+    if not os.path.exists(plot_path):
+        os.mkdir(plot_path)
 
-    z_s_size = 356
-    z_m_size = 128
+    z_s_size = 512#1024
+    z_m_size = 256#512
     
     # Load pretrain models.
     ecg_decoder, ecg_encoder, mri_encoder, mri_decoder = load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path,
@@ -53,7 +49,7 @@ def main():
     sample_list = get_id_list(data_path, from_file=True, file_name="/home/sana/multimodal/data_list.pkl")
     # sample_list = sample_list
     print("Total number of samples: ", len(sample_list))
-    train_loader, _, _, list_ids = load_data(sample_list, data_path, train_ratio=0.9, test_ratio=0.05)
+    train_loader, _, _, list_ids = load_data(sample_list, n_train=5000, data_paths=data_paths, train_ratio=0.9, test_ratio=0.05)
     n_train = int(len(sample_list)*0.6)
     ref_samples = get_ref_sample(data_path, list_ids[0][10])
 
@@ -63,11 +59,11 @@ def main():
                                  train_ids=list_ids[0], shared_size=z_s_size, modality_names=modality_names, 
                                  z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
                                  modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                                 mask=True, beta=0.1)  
+                                 mask=True, beta=0.0001, gamma=0.01, ckpt_path=ckpt_path)  
     
     del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
 
-    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=4, epochs_dec=4, lr_dec=0.001, lr_enc=0.001)
+    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=5, epochs_dec=5, lr_dec=1e-3, lr_enc=1e-3, iteration_count=20)
     
     _, axs = plt.subplots(1,3, figsize=(12, 4))
     # axs[0, 0].plot(dec_loss)
