@@ -2,9 +2,11 @@
 import sys
 import os
 import numpy as np
+import argparse
 sys.path.append('/home/sana/ml4h')
 sys.path.append('/home/sana')
 import tensorflow as tf
+import json
 from tensorflow import keras 
 
 import matplotlib.pyplot as plt
@@ -12,62 +14,68 @@ import random
 import seaborn as sns
 sns.set_theme
 
-from multimodal.representation import MultimodalRep
-from multimodal.utils import load_pretrained_models, load_data, get_id_list, plot_sample, pca_analysis, get_ref_sample
+from multimodal.fusion import DeMuReFusion
+from multimodal.utils import *
 
 tf.keras.callbacks.TerminateOnNaN()
 tf.config.list_physical_devices('GPU')
 
+parser = argparse.ArgumentParser(description='DeMuRe Fusion')
+parser.add_argument('--log_path', default='/home/sana/multimodal/logs/out.txt')
+parser.add_argument('--plot_path', default='/home/sana/multimodal/plots/')
+parser.add_argument('--ckpt_path', default='/home/sana/multimodal/ckpts/')
+parser.add_argument('--zm_size', default=400, type=int)
+parser.add_argument('--zs_size', default=600, type=int)
+parser.add_argument('--beta', default=1e-6)
+parser.add_argument('--gamma', default=1)
+parser.add_argument('--n_samples', default=1000, type=int)
+parser.add_argument('--modality_names', nargs='+', default=['input_ecg_rest_median_raw_10_continuous', 'input_lax_4ch_heart_center_continuous'])
+
+
 def main():
+    args = parser.parse_args()
     orig_stdout = sys.stdout
-    out_file = open('/home/sana/multimodal/logs/out.txt', 'w')
+    out_file = open(args.log_path, 'w')
     sys.stdout = out_file
 
-    data_path = "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21"
-    ecg_decoder_path = '/home/sana/model_ckpts/decoder_ecg_rest_median_raw_10.h5'
-    ecg_encoder_path = '/home/sana/model_ckpts/encoder_ecg_rest_median_raw_10.h5'
-    mri_encoder_path = '/home/sana/model_ckpts/encoder_lax_4ch_heart_center.h5'
-    mri_decoder_path = '/home/sana/model_ckpts/decoder_lax_4ch_heart_center.h5'
-    modality_names = ['input_ecg_rest_median_raw_10_continuous', 'input_lax_4ch_heart_center_continuous']
-    data_paths = {'input_lax_4ch_heart_center_continuous':data_path, 'input_ecg_rest_median_raw_10_continuous':data_path}
-    ckpt_path = "/home/sana/multimodal/ckpts"
-    plot_path = "/home/sana/multimodal/plots"
+    with open('/home/sana/multimodal/config.json', 'r') as f:
+        configs = json.load(f)
 
-    if not os.path.exists(ckpt_path):
-        os.mkdir(ckpt_path)
-    if not os.path.exists(plot_path):
-        os.mkdir(plot_path)
+    if not os.path.exists(args.ckpt_path):
+        os.mkdir(args.ckpt_path)
+    if not os.path.exists(args.plot_path):
+        os.mkdir(args.plot_path)
 
-    z_s_size = 512#1024
-    z_m_size = 256#512
+    M1 = args.modality_names[0]
+    M2 = args.modality_names[1]
+    data_paths = {M1:configs[M1]["raw_data_path"], M2:configs[M2]["raw_data_path"]}
     
     # Load pretrain models.
-    ecg_decoder, ecg_encoder, mri_encoder, mri_decoder = load_pretrained_models(ecg_decoder_path, ecg_encoder_path, mri_encoder_path, mri_decoder_path,
-                                                                                shared_s=z_s_size, modality_specific_s=z_m_size)
+    decoder_1, encoder_1, decoder_2, encoder_2 = load_pretrained_models(decoder_path_1=configs[M1]["decoder_path"], 
+                                                                        encoder_path_1=configs[M1]["encoder_path"],
+                                                                        decoder_path_2=configs[M2]["decoder_path"], 
+                                                                        encoder_path_2=configs[M2]["encoder_path"],
+                                                                        shared_s=args.zs_size, modality_specific_s=args.zm_size)
 
     # Load data
-    sample_list = get_id_list(data_path, from_file=True, file_name="/home/sana/multimodal/data_list.pkl")
-    # sample_list = sample_list
+    sample_list = get_paired_id_list(data_paths, from_file=False, file_name="/home/sana/multimodal/data_list.pkl")
     print("Total number of samples: ", len(sample_list))
-    train_loader, _, _, list_ids = load_data(sample_list, n_train=5000, data_paths=data_paths, train_ratio=0.9, test_ratio=0.05)
-    n_train = int(len(sample_list)*0.6)
-    ref_samples = get_ref_sample(data_path, list_ids[0][10])
+    train_loader, _, _, list_ids = load_data(sample_list, n_train=args.n_samples, data_paths=data_paths, test_ratio=0.01)
 
     # Train the dissentangler 
-    rep_disentangler = MultimodalRep(encoders={'input_ecg_rest_median_raw_10_continuous': ecg_encoder, 'input_lax_4ch_heart_center_continuous':mri_encoder}, 
-                                 decoders={'input_ecg_rest_median_raw_10_continuous': ecg_decoder, 'input_lax_4ch_heart_center_continuous':mri_decoder}, 
-                                 train_ids=list_ids[0], shared_size=z_s_size, modality_names=modality_names, 
-                                 z_sizes={'input_ecg_rest_median_raw_10_continuous':z_m_size, 'input_lax_4ch_heart_center_continuous':z_m_size},
-                                 modality_shapes={'input_ecg_rest_median_raw_10_continuous':(600, 12), 'input_lax_4ch_heart_center_continuous':(96, 96, 50)},
-                                 mask=True, beta=0.0001, gamma=0.01, ckpt_path=ckpt_path)  
-    
-    del ecg_decoder, ecg_encoder, mri_encoder, mri_decoder
+    rep_disentangler = DeMuReFusion(encoders={M1: encoder_1, M2:encoder_2}, 
+                                 decoders={M1: decoder_1, M2:decoder_2}, 
+                                 train_ids=list_ids[0], shared_size=args.zs_size, modality_names=args.modality_names, 
+                                 z_sizes={M1:args.zm_size, M2:args.zm_size},
+                                 modality_shapes={M1:configs[M1]["input_size"], M2:configs[M2]["input_size"]},
+                                 mask=True, beta=args.beta, gamma=args.gamma, ckpt_path=args.ckpt_path)  
+    del decoder_1, encoder_1, encoder_2, decoder_2
 
-    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=5, epochs_dec=5, lr_dec=1e-3, lr_enc=1e-3, iteration_count=20)
+    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=10, epochs_dec=10, 
+                                                                            lr_dec=1e-3, lr_enc=1e-3, iteration_count=20,
+                                                                            extra_encoder_training=20, no_mask_epochs=25)
     
     _, axs = plt.subplots(1,3, figsize=(12, 4))
-    # axs[0, 0].plot(dec_loss)
-    # axs[0, 0].set_title("Decoder training loss")
     axs[0].plot(modality_loss)
     axs[0].set_title("modality-specific training loss")
     axs[1].plot(shared_loss)
@@ -75,9 +83,8 @@ def main():
     axs[2].plot(enc_loss)
     axs[2].set_title("Encoder training loss")
     plt.tight_layout()
-    plt.savefig("/home/sana/multimodal/plots/train_curves.pdf")
+    plt.savefig(os.path.join(plot_path,"train_curves.pdf"))
 
 
-if __name__=="__main__":
-    # with open('/home/sana/multimodal/logs/out.txt', 'w') as sys.stdout:
+if __name__=="__main__": 
     main()
