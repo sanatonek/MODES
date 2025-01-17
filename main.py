@@ -71,6 +71,7 @@ def main():
                                  mask=True, beta=args.beta, gamma=args.gamma, ckpt_path=args.ckpt_path)  
     del decoder_1, encoder_1, encoder_2, decoder_2
 
+
     dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=10, epochs_dec=10, 
                                                                             lr_dec=1e-3, lr_enc=1e-3, iteration_count=20,
                                                                             extra_encoder_training=20, no_mask_epochs=25)
