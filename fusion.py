@@ -1,5 +1,4 @@
 import torch
-from torch.utils.data import Dataset
 import tensorflow as tf
 from tensorflow import keras 
 import numpy as np
@@ -214,7 +213,7 @@ class DeMuReFusion():
                         z_m = z[batch_ind:batch_ind+batch_size]+noise_m
                         mse = self.posterior_means[mod][batch_ind:batch_ind+batch_size]**2
                         if self.mask:
-                            loss += (0.01*self.beta*(self.shared_mask.l1())+self.gamma*(self.shared_mask.entropy_regularization())) 
+                            loss += (0.1*self.beta*(self.shared_mask.l1())+self.gamma*(self.shared_mask.entropy_regularization())) 
                             z_s_other = self.shared_mask(z_s_other)
                             z_m = self.modality_masks[mod](z_m)
                         reconst = self.decoders[mod](tf.concat([z_m, z_s_other], -1))
@@ -265,6 +264,7 @@ class DeMuReFusion():
                         loss = 0.01*tf.reduce_mean(mse)
                         reconst = self.decoders[mod](tf.concat([z_m, z_s], -1))
                         loss += loss_fn(x_m,reconst)
+                        # loss += 0.01*self._frobenius_distance_cosine(z_m, z_s)
                         trainable_var.extend(self.decoders[mod].trainable_variables)
                         if self.mask:
                             trainable_var.extend([self.modality_masks[mod].mask_logits])
@@ -413,6 +413,19 @@ class DeMuReFusion():
                 else:
                     x_recon[mod] = decoder(tf.concat([z_m_all[mod], z_s_all[mod]], -1))
         return x_recon
+
+    def _frobenius_distance_cosine(self, X, Y):
+        # Normalize the samples to ensure vectors have unit length
+        X_normalized = X / np.linalg.norm(X, axis=1, keepdims=True)
+        Y_normalized = Y / np.linalg.norm(Y, axis=1, keepdims=True)
+
+        # Compute the cosine similarity matrix between X and Y
+        cosine_similarity_matrix = np.dot(X_normalized, Y_normalized.T)
+
+        # Compute the Frobenius norm of the cosine similarity matrix
+        frobenius_norm = np.linalg.norm(cosine_similarity_matrix, ord='fro')
+
+        return frobenius_norm
 
 
 class LearnableMask(keras.layers.Layer):

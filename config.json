@@ -3,20 +3,23 @@
       "input_size": [600, 12],
       "encoder_path": "/home/sana/model_ckpts/encoder_ecg_rest_median_raw_10.h5",
       "decoder_path": "/home/sana/model_ckpts/decoder_ecg_rest_median_raw_10.h5",
-      "raw_data_path": "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21"
+      "raw_data_path": "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21",
+      "abv. name": "ECG"
     },
 
     "input_lax_4ch_heart_center_continuous": {
       "input_size": [96, 96, 50],
       "encoder_path": "/home/sana/model_ckpts/encoder_lax_4ch_heart_center.h5",
       "decoder_path": "/home/sana/model_ckpts/decoder_lax_4ch_heart_center.h5",
-      "raw_data_path": "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21"
+      "raw_data_path": "/mnt/disks/google-annotated-cardiac-tensors-45k-2021-03-25/2020-09-21",
+      "abv. name": "cMRI"
     },
     
     "input_axial_128_160_continuous": {
       "input_size": [176, 216, 32],
       "encoder_path": "/home/sana/model_ckpts/encoder_axial_128_160.h5",
       "decoder_path": "/home/sana/model_ckpts/decoder_axial_128_160.h5",
-      "raw_data_path": "/mnt/disks/google-abaumann-ukbb-brain-mri-tensors-65k"
+      "raw_data_path": "/mnt/disks/google-abaumann-ukbb-brain-mri-tensors-65k",
+      "abv. name": "bMRI"
     }
 }

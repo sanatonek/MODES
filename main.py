@@ -29,6 +29,7 @@ parser.add_argument('--zs_size', default=600, type=int)
 parser.add_argument('--beta', default=1e-6)
 parser.add_argument('--gamma', default=1)
 parser.add_argument('--n_samples', default=1000, type=int)
+parser.add_argument('--n_epochs', default=10, type=int)
 parser.add_argument('--modality_names', nargs='+', default=['input_ecg_rest_median_raw_10_continuous', 'input_lax_4ch_heart_center_continuous'])
 
 
@@ -54,8 +55,7 @@ def main():
     decoder_1, encoder_1, decoder_2, encoder_2 = load_pretrained_models(decoder_path_1=configs[M1]["decoder_path"], 
                                                                         encoder_path_1=configs[M1]["encoder_path"],
                                                                         decoder_path_2=configs[M2]["decoder_path"], 
-                                                                        encoder_path_2=configs[M2]["encoder_path"],
-                                                                        shared_s=args.zs_size, modality_specific_s=args.zm_size)
+                                                                        encoder_path_2=configs[M2]["encoder_path"])
 
     # Load data
     sample_list = get_paired_id_list(data_paths, from_file=False, file_name="/home/sana/multimodal/data_list.pkl")
@@ -72,9 +72,10 @@ def main():
     del decoder_1, encoder_1, encoder_2, decoder_2
 
 
-    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=10, epochs_dec=10, 
+    dec_loss, enc_loss, shared_loss, modality_loss = rep_disentangler.train(train_loader, epochs_enc=args.n_epochs, epochs_dec=args.n_epochs, 
                                                                             lr_dec=1e-3, lr_enc=1e-3, iteration_count=20,
-                                                                            extra_encoder_training=20, no_mask_epochs=25)
+                                                                            extra_encoder_training=20, no_mask_epochs=2
+                                                                            )
     
     _, axs = plt.subplots(1,3, figsize=(12, 4))
     axs[0].plot(modality_loss)
@@ -84,7 +85,7 @@ def main():
     axs[2].plot(enc_loss)
     axs[2].set_title("Encoder training loss")
     plt.tight_layout()
-    plt.savefig(os.path.join(plot_path,"train_curves.pdf"))
+    plt.savefig(os.path.join(args.plot_path,"train_curves.pdf"))
 
 
 if __name__=="__main__": 

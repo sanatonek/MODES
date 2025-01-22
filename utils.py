@@ -6,6 +6,7 @@ import pandas as pd
 import seaborn as sns
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 import tensorflow as tf
 import numpy as np
 import random
@@ -55,7 +56,7 @@ class MultimodalUKBDataset(Dataset):
         return samples, int(sample_id)
 
 
-def load_pretrained_models(decoder_path_1, encoder_path_2, encoder_path_1, decoder_path_2, shared_s, modality_specific_s):
+def load_pretrained_models(decoder_path_1, encoder_path_1, decoder_path_2, encoder_path_2):
     decoder_1 = tf.keras.models.load_model(decoder_path_1)
     encoder_1 = tf.keras.models.load_model(encoder_path_1)
     encoder_2 = tf.keras.models.load_model(encoder_path_2)
